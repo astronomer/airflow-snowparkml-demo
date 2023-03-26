@@ -1,0 +1,6 @@
+.env
+.git
+airflow_settings.yaml
+astro
+.kube
+__pycache__

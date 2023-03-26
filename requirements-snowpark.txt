@@ -1,0 +1,6 @@
+snowflake-snowpark-python[pandas]
+apache-airflow
+psycopg2-binary 
+apache-airflow-providers-snowflake
+/tmp/snowflake_ml_python-0.2.1-py3-none-any.whl
+    
