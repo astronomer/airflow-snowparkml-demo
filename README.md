@@ -22,7 +22,7 @@ As of this demo's creation Snowpark Python is supported only on Python 3.8.  Whi
 - Time: Developers spend lots of unproductive time watching Docker image building.
 - Updates: During development it is often necessary to restart docker services or change settings. The options above do not support `cacheing` which means each restart requires the same lengthy build delay unless the developer manually caches images.
   
-## : Docker buildkit from with ❤️ from Astronomer
+## Docker buildkit... with ❤️ from Astronomer
   
 Astronomer has created a custom Docker frontend buildkit to drastically simplify this build process to only a couple of lines in the Dockerfile.  
 
@@ -46,13 +46,13 @@ cd airflow-snowml-demo
 ```python
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
 hook = SnowflakeHook(role='sysadmin')
-your_role = 'MICHAELGREGORY'
+your_role = '<your_role>'
 hook.run(f'''
-CREATE DATABASE MODEL_REGISTRY;
-GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
-CREATE SCHEMA MODEL_REGISTRY.PUBLIC; 
-GRANT USAGE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
-GRANT CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
+    CREATE DATABASE MODEL_REGISTRY;
+    GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
+    CREATE SCHEMA MODEL_REGISTRY.PUBLIC; 
+    GRANT USAGE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
+    GRANT CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
 ''')
 ```
 
