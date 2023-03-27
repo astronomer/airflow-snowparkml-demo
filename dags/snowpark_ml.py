@@ -6,13 +6,13 @@ from astro import sql as aql
 from astro.files import File 
 from astro.sql.table import Table 
 
-Variable.set('_SNOWFLAKE_CONN_ID', 'snowflake_default')
+Variable.set('SNOWFLAKE_CONN_ID', 'snowflake_default')
 Variable.set('raw_table_name', 'TAXI_RAW')
 Variable.set('taxi_table_name', 'TAXI_DATA')
 Variable.set('feature_table_name', 'TAXI_FEATURE')
 Variable.set('pred_table_name', 'TAXI_PRED')
+Variable.set('model_registry_database', 'MODEL_REGISTRY')
 
-_SNOWFLAKE_CONN_ID = Variable.get('_SNOWFLAKE_CONN_ID')
 _SNOWPARK_BIN = '/home/astro/.venv/snowpark_env/bin/python'
 
 ingest_files=['yellow_tripdata_sample_2019_01.csv', 'yellow_tripdata_sample_2019_02.csv']
@@ -20,18 +20,19 @@ ingest_files=['yellow_tripdata_sample_2019_01.csv', 'yellow_tripdata_sample_2019
 @dag(dag_id='snowpark_ml_dag', schedule_interval=None, start_date=datetime(2023, 3, 25))
 def snowml_demo():
 
-	@task.external_python(task_id="setup_registry", python=_SNOWPARK_BIN )
-	def setup_registry() -> str:
+	@task.external_python(task_id="check_registry", python=_SNOWPARK_BIN )
+	def check_registry() -> str:
 		from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+		from airflow.models import Variable
 		from snowflake.snowpark import Session
 		from snowflake.ml.registry import model_registry
 
-		hook = SnowflakeHook(_SNOWFLAKE_CONN_ID) #, role='sysadmin')
+		hook = SnowflakeHook(Variable.get('SNOWFLAKE_CONN_ID'))
 		snowpark_session = Session.builder.configs(hook._get_conn_params()).create()
 
-		create_result = model_registry.create_model_registry(session=snowpark_session, database_name='MODEL_REGISTRY')
+		registry = model_registry.ModelRegistry(session=snowpark_session, name=Variable.get('model_registry_database'))
 
-		registry = model_registry.ModelRegistry(session=snowpark_session, name='MODEL_REGISTRY')
+		snowpark_session.close()
 		
 		return registry._name
 
@@ -41,7 +42,7 @@ def snowml_demo():
 		for source in ingest_files:
 			aql.load_file(task_id=f'load_{source}',
 				input_file = File(f'include/{source}'), 
-				output_table = Table(name=Variable.get('raw_table_name'), conn_id=_SNOWFLAKE_CONN_ID),
+				output_table = Table(name=Variable.get('raw_table_name'), conn_id=Variable.get('SNOWFLAKE_CONN_ID')),
 				if_exists='replace'
 			)
 
@@ -54,7 +55,7 @@ def snowml_demo():
 		from snowflake.snowpark import functions as F
 		from snowflake.snowpark import types as T
 
-		hook = SnowflakeHook(_SNOWFLAKE_CONN_ID)
+		hook = SnowflakeHook(Variable.get('SNOWFLAKE_CONN_ID'))
 		conn_params = hook._get_conn_params()
 		snowpark_session = Session.builder.configs(conn_params).create()
 
@@ -89,7 +90,7 @@ def snowml_demo():
 		from snowflake.ml.preprocessing import MaxAbsScaler, OneHotEncoder
 		from snowflake.ml.framework import pipeline
 
-		hook = SnowflakeHook(_SNOWFLAKE_CONN_ID)
+		hook = SnowflakeHook(Variable.get('SNOWFLAKE_CONN_ID'))
 		conn_params = hook._get_conn_params()
 		snowpark_session = Session.builder.configs(conn_params).create()
 
@@ -124,7 +125,7 @@ def snowml_demo():
 		from sklearn.metrics import mean_squared_error
 		from snowflake.ml.registry import model_registry
 
-		hook = SnowflakeHook(_SNOWFLAKE_CONN_ID)
+		hook = SnowflakeHook(Variable.get('SNOWFLAKE_CONN_ID'))
 		conn_params = hook._get_conn_params()
 		snowpark_session = Session.builder.configs(conn_params).create()
 
@@ -163,7 +164,7 @@ def snowml_demo():
 		from snowflake.snowpark import Session
 		from snowflake.ml.registry import model_registry
 		
-		hook = SnowflakeHook(_SNOWFLAKE_CONN_ID)
+		hook = SnowflakeHook(Variable.get('SNOWFLAKE_CONN_ID'))
 		conn_params = hook._get_conn_params()
 		snowpark_session = Session.builder.configs(conn_params).create()
 		
@@ -196,7 +197,7 @@ def snowml_demo():
 
 		return pred_table_name
 
-	registry_name = setup_registry()
+	registry_name = check_registry()
 	taxi_table_name = transform()
 	feature_table_name = feature_engineering(taxi_table_name)
 	model_id = train(feature_table_name=feature_table_name, registry_name=registry_name) 
@@ -205,15 +206,3 @@ def snowml_demo():
 	load() >> taxi_table_name
 
 snowml_demo = snowml_demo()
-
-
-
-
-# from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-# your_role = 'MICHAELGREGORY'
-# SnowflakeHook(role='sysadmin').run(f'''
-# 	CREATE DATABASE IF NOT EXISTS MODEL_REGISTRY;
-# 	GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
-# 	CREATE SCHEMA IF NOT EXISTS MODEL_REGISTRY.PUBLIC; 
-# 	GRANT USAGE, CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
-# ''')

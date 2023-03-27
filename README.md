@@ -36,25 +36,12 @@ PYENV 3.8 snowpark_env snowpark-requirements.txt
 
 ## Setup  
   
-1. Git clone this repository
+1. Clone this repository:
 ```bash
 git clone https://github.com/astronomer/airflow-snowml-demo
 cd airflow-snowml-demo
 ```
-2. 
-3. Create model_registry schema.  SnowML can create the registry automatically but this requires user/role permissions which may not be available to most users.  Alternatively create the SnowML model_registry schema in Snowflake with a role which has `CREATE DATABASE` and 'CREATE SCHEMA` privileges with the following python:
-```python
-from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-your_role = '<your_role>'
-SnowflakeHook(role='sysadmin').run(f'''
-	CREATE DATABASE IF NOT EXISTS MODEL_REGISTRY;
-	GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
-	CREATE SCHEMA IF NOT EXISTS MODEL_REGISTRY.PUBLIC; 
-	GRANT USAGE, CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
-''')
-```
-
-4. Edit airflow_settings.yaml and create a new connection called **'snowflake_default'** with your Snowflake account details.  Example:  
+2. Edit airflow_settings.yaml and create a new connection called **'snowflake_default'** with your Snowflake account details.  Example:  
     ```text
     connections:
         - conn_id: snowflake_default
@@ -70,9 +57,48 @@ SnowflakeHook(role='sysadmin').run(f'''
                     "extra__snowflake__role": "<user_role_name>", 
                     "extra__snowflake__insecure_mode": false}
     ```  
-    The airflow_settings.yaml file listed in .gitignore so this should not be copied to git.  Alternatively you can enter this information in the Airflow UI after starting the Astronomer dev runtime.  
+    The airflow_settings.yaml file listed in .gitignore so this should not be copied to git.  Alternatively you can enter this information in the Airflow UI after starting the Astronomer dev runtime. 
+3.  Start Apache Airflow:
     ```sh
     astro dev start
     ```  
-6. Connect to the Local Airflow instance UI at (http://localhost:8080) and login with **Admin/Admin**  
+
+4. Create model_registry schema.  SnowML requires a database and schema to store model metadata.  The `check_registry` task of the demo DAG assumes that it has been setup already.  For example, the following can be run in python with Snowflake user credentials which have `sysadmin` role to create the Snowflake objects:
+```python
+from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+from snowflake.ml.registry import model_registry
+from snowflake.snowpark import Session
+
+hook = SnowflakeHook(
+    account='account', 
+    password='password',
+    region='region',
+    login='login',
+    warehouse='warehouse',
+    role='sysadmin',
+)
+snowpark_session = Session.builder.configs(hook._get_conn_params()).create()
+_ = model_registry.create_model_registry(session=snowpark_session, database_name='MODEL_REGISTRY')
+
+user_role_name = <your_user_role_name>
+
+hook.run(f'''
+    GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {user_role_name};
+    GRANT USAGE, CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {user_role_name};
+    GRANT SELECT, INSERT ON TABLE MODEL_REGISTRY.PUBLIC.METADATA TO ROLE {user_role_name};
+    GRANT SELECT, INSERT ON TABLE MODEL_REGISTRY.PUBLIC.MODELS TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.METADATA_LAST_DESCRIPTION TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.METADATA_LAST_METRICS TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.METADATA_LAST_NAME TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.METADATA_LAST_REGISTRATION TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.METADATA_LAST_TAGS TO ROLE {user_role_name};
+    GRANT SELECT ON VIEW MODEL_REGISTRY.PUBLIC.MODELS_VIEW TO ROLE {user_role_name};
+    GRANT CREATE STAGE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {user_role_name};
+''')
+
+snowpark_session.close()
+  
+```
+
+5. Connect to the Local Airflow instance UI at (http://localhost:8080) and login with **Admin/Admin**  
     If you did not add the Snowflake connection to airflow_settings.yaml add it now in the Admin -> Connections menu.  

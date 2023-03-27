@@ -1,6 +1,6 @@
 # syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.4
 FROM quay.io/astronomer/astro-runtime:7.4.1-base
-COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
+COPY include/snowml/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 PYENV 3.8 snowpark_env requirements-snowpark.txt
 
 
@@ -8,7 +8,7 @@ PYENV 3.8 snowpark_env requirements-snowpark.txt
 
 # #Python for Snowpark via ExternalPythonOperator
 # COPY requirements-snowpark.txt /tmp
-# COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
+# COPY include/snowml/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 # RUN arch=$(arch | sed s/aarch64/aarch64/ | sed s/x86_64/x86_64/) && \
 #     wget --quiet https://repo.anaconda.com/miniconda/Miniconda3-latest-Linux-${arch}.sh -O ~/miniconda.sh && \
 #     /bin/bash /home/astro/miniconda.sh -b && \
@@ -23,7 +23,7 @@ PYENV 3.8 snowpark_env requirements-snowpark.txt
 # FROM quay.io/astronomer/astro-runtime:7.4.1
 
 # COPY requirements-snowpark.txt /tmp
-# COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
+# COPY include/snowml/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 # USER root
 # COPY --link --from=python:3.8-slim /usr/local/bin/*3.8* /usr/local/bin/
 # COPY --link --from=python:3.8-slim /usr/local/include/python3.8* /usr/local/include/python3.8
@@ -59,5 +59,5 @@ PYENV 3.8 snowpark_env requirements-snowpark.txt
 #____________________________________
 # # syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.4
 # FROM quay.io/astronomer/astro-runtime:7.4.1-base
-# COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
+# COPY include/snowml/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 # PYENV 3.8 snowpark_env requirements-snowpark.txt
