@@ -205,3 +205,15 @@ def snowml_demo():
 	load() >> taxi_table_name
 
 snowml_demo = snowml_demo()
+
+
+
+
+# from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
+# your_role = 'MICHAELGREGORY'
+# SnowflakeHook(role='sysadmin').run(f'''
+# 	CREATE DATABASE IF NOT EXISTS MODEL_REGISTRY;
+# 	GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
+# 	CREATE SCHEMA IF NOT EXISTS MODEL_REGISTRY.PUBLIC; 
+# 	GRANT USAGE, CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
+# ''')

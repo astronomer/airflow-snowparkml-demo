@@ -45,14 +45,12 @@ cd airflow-snowml-demo
 3. Create model_registry schema.  SnowML can create the registry automatically but this requires user/role permissions which may not be available to most users.  Alternatively create the SnowML model_registry schema in Snowflake with a role which has `CREATE DATABASE` and 'CREATE SCHEMA` privileges with the following python:
 ```python
 from airflow.providers.snowflake.hooks.snowflake import SnowflakeHook
-hook = SnowflakeHook(role='sysadmin')
 your_role = '<your_role>'
-hook.run(f'''
-    CREATE DATABASE MODEL_REGISTRY;
-    GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
-    CREATE SCHEMA MODEL_REGISTRY.PUBLIC; 
-    GRANT USAGE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
-    GRANT CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
+SnowflakeHook(role='sysadmin').run(f'''
+	CREATE DATABASE IF NOT EXISTS MODEL_REGISTRY;
+	GRANT USAGE ON DATABASE MODEL_REGISTRY TO ROLE {your_role} ;
+	CREATE SCHEMA IF NOT EXISTS MODEL_REGISTRY.PUBLIC; 
+	GRANT USAGE, CREATE TABLE ON SCHEMA MODEL_REGISTRY.PUBLIC TO ROLE {your_role};
 ''')
 ```
 
