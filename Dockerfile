@@ -1,4 +1,4 @@
-# syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.3
+# syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.4
 FROM quay.io/astronomer/astro-runtime:7.4.1-base
 COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 PYENV 3.8 snowpark_env requirements-snowpark.txt
@@ -57,7 +57,7 @@ PYENV 3.8 snowpark_env requirements-snowpark.txt
 #     pip install --no-cache-dir --upgrade pip && \
 #     pip install --no-cache-dir -r /tmp/requirements-snowpark.txt
 #____________________________________
-# # syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.3
+# # syntax=quay.io/astronomer/airflow-extensions:v1.0.0-alpha.4
 # FROM quay.io/astronomer/astro-runtime:7.4.1-base
 # COPY include/0.2.1/snowflake_ml_python-0.2.1-py3-none-any.whl /tmp
 # PYENV 3.8 snowpark_env requirements-snowpark.txt
