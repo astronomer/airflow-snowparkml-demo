@@ -1,9 +1,11 @@
 """
 ### Use the Snowpark Provider in a Machine Learning workflow
 
-This DAG demonstrates a simple machine learning pipeline using the Snowpark decorators 
-and the Snowpark ML model registry.  The Snowpark provider is in a dev status and not yet 
-in the pypi registry. Instead the provider is available via a wheel file in the linked 
+This DAG demonstrates a simple machine learning pipeline using the Snowpark decorators, 
+the Snowflake XCOM backend, and the Snowpark ML model registry.  
+
+The Snowpark provider is in a dev status and not yet in the pypi registry. 
+Instead the provider is available via a wheel file in the linked 
 repository.
 """
 

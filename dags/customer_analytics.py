@@ -2,12 +2,12 @@
 ### Use the Snowpark Provider in an advanced Machine Learning workflow
 
 This DAG demonstrates an end-to-end application workflow using OpenAI embeddings with a
-Weaviate vector database as well as Snowpark decorators and the Snowpark ML model registry.  
-The Astro CLI can easily be adapted to include additional Docker-based services.  
-This demo includes services for Minio, Weaviate and streamlit.
+Weaviate vector database as well as Snowpark decorators, the Snowflake XCOM backend and 
+the Snowpark ML model registry.  The Astro CLI can easily be adapted to include additional 
+Docker-based services.  This demo includes services for Minio, Weaviate and streamlit.
 
-The Snowpark provider is in a dev status and not yet 
-in the pypi registry. Instead the provider is available via a wheel file in the linked 
+The Snowpark provider is in a dev status and not yet in the pypi registry. 
+Instead the provider is available via a wheel file in the linked 
 repository.
 
 See [README_CA.md](https://github.com/astronomer/airflow-snowparkml-demo/blob/main/README_CA.md) for setup instructions.
