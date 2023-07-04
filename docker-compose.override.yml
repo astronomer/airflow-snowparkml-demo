@@ -1,0 +1,74 @@
+version: '3.1'
+services:
+  scheduler:
+    networks:
+      - airflow
+    environment:
+      DEMO_DATABASE: ${DEMO_DATABASE}
+      DEMO_SCHEMA: ${DEMO_SCHEMA}
+      OPENAI_APIKEY: ${OPENAI_APIKEY}
+      AIRFLOW__CORE__XCOM_BACKEND: 'astronomer.providers.snowflake.xcom_backends.snowflake.SnowflakeXComBackend'
+      AIRFLOW__CORE__XCOM_SNOWFLAKE_TABLE: '${DEMO_DATABASE}.${DEMO_SCHEMA}.XCOM_TABLE'
+      AIRFLOW__CORE__XCOM_SNOWFLAKE_STAGE: '${DEMO_DATABASE}.${DEMO_SCHEMA}.XCOM_STAGE'
+      AIRFLOW__CORE__XCOM_SNOWFLAKE_CONN_NAME: 'snowflake_default'
+      AIRFLOW_CONN_SNOWFLAKE_DEFAULT: ${AIRFLOW_CONN_SNOWFLAKE_DEFAULT}
+      AIRFLOW_CONN_MINIO_DEFAULT: '{"conn_type": "aws", "login": "minioadmin", "password": "minioadmin", "host": "", "port": "", "extra": {"aws_access_key": "minioadmin", "aws_secret_access_key": "minioadmin", "endpoint_url": "minio:9000"}}'
+      AIRFLOW_CONN_WEAVIATE_DEFAULT: '{"conn_type": "weaviate", "login": "", "password": "", "host": "weaviate", "port": "8081", "extra": {"endpoint_url": "http://weaviate:8081", "headers": {"X-OpenAI-Api-Key": "$OPENAI_APIKEY"}}}'
+      AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: airflow\.* astro\.* include\.astro\.*
+  # minio:
+  #   image: quay.io/minio/minio:latest
+  #   command:
+  #   - server 
+  #   - /data 
+  #   - --console-address 
+  #   - ":9001"
+  #   ports:
+  #   - 9000:9000
+  #   - 9001:9001
+  #   # volumes:
+  #   # - ${PWD}/include/minio/data:/data
+  #   networks:
+  #     - airflow
+  # streamlit:
+  #   image: sissyg-streamlit:local
+  #   build: ./include/streamlit
+  #   # command:
+  #   # - python
+  #   # - -m
+  #   # - streamlit
+  #   # - run 
+  #   # - streamlit_app.py 
+  #   # - --server.port=8501 
+  #   # - --server.address=0.0.0.0
+  #   environment:
+  #     WEAVIATE_ENDPOINT_URL: 'http://weaviate:8081'
+  #     OPENAI_APIKEY: ${OPENAI_APIKEY}
+  #     SNOWFLAKE_CONN_PARAMS: ${AIRFLOW_CONN_SNOWFLAKE_DEFAULT}
+  #   # volumes:
+  #   # - ${PWD}/include/streamlit/snowflake/session:/snowflake/session
+  #   # - ${PWD}/include/streamlit/src:/app
+  #   ports:
+  #   - 8501:8501
+  #   networks:
+  #     - airflow
+  # weaviate:
+  #   image: semitechnologies/weaviate:1.17.3
+  #   command: "--host 0.0.0.0 --port '8081' --scheme http"
+  #   ports:
+  #   - 8081:8081
+  #   # volumes:
+  #   #   - ${PWD}/include/weaviate/data:/var/lib/weaviate
+  #   environment:
+  #     QUERY_DEFAULTS_LIMIT: 25
+  #     AUTHENTICATION_ANONYMOUS_ACCESS_ENABLED: 'true'
+  #     PERSISTENCE_DATA_PATH: '/var/lib/weaviate'
+  #     DEFAULT_VECTORIZER_MODULE: 'text2vec-openai'
+  #     ENABLE_MODULES: 'text2vec-openai, backup-s3, qna-openai'
+  #     CLUSTER_HOSTNAME: 'node1'
+  #     BACKUP_S3_BUCKET: 'weaviate-backup'
+  #     BACKUP_S3_ENDPOINT: 'minio:9000'
+  #     BACKUP_S3_USE_SSL: 'false'
+  #     AWS_ACCESS_KEY_ID: 'minioadmin'
+  #     AWS_SECRET_ACCESS_KEY: 'minioadmin'
+  #   networks:
+  #     - airflow

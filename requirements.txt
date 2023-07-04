@@ -1,0 +1,10 @@
+snowflake-snowpark-python[pandas]==1.5.1
+snowflake-ml-python==1.0.2
+/tmp/astro_provider_snowflake-0.0.0-py3-none-any.whl
+apache-airflow-providers-snowflake==4.1.0
+astronomer-cosmos==0.7.4
+airflow-provider-great-expectations==0.2.6
+great-expectations==0.16.14
+weaviate-client==3.19.2
+minio==7.1.15
+scikit-learn==1.2.2

@@ -1,2 +1,2 @@
 project:
-  name: snowpark_k8s
+  name: airflow-snowparkml-demo
