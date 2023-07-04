@@ -64,6 +64,7 @@ python include/utils/setup_snowflake.py \
   --admin_role 'sysadmin' \
   --database $DEMO_DATABASE \
   --schema $DEMO_SCHEMA
+exit
 ```  
   
 6. Setup the table and stage to be used as the Snowflake XCOM backend.
@@ -76,6 +77,7 @@ python include/utils/snowflake_xcom_backend.py \
   --conn_id 'snowflake_default' \
   --database $DEMO_DATABASE \
   --schema $DEMO_SCHEMA
+exit
 ```
 
 7. Run the Snowpark ML Demo DAG
