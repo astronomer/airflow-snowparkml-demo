@@ -1,3 +1,12 @@
+"""
+### Use the Snowpark Provider in a Machine Learning workflow
+
+This DAG demonstrates a simple machine learning pipeline using the Snowpark decorators 
+and the Snowpark ML model registry.  The Snowpark provider is in a dev status and not yet 
+in the pypi registry. Instead the provider is available via a wheel file in the linked 
+repository.
+"""
+
 from datetime import datetime
 from airflow.decorators import dag, task, task_group
 from astro import sql as aql

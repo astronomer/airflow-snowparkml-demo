@@ -1,0 +1,14 @@
+categories:
+  - AI + Machine Learning
+  - Machine Learning
+  - Model Registry
+  - Airflow Fundamentals
+  - Big Data & Analytics
+  - Compute
+  - Data Processing
+  - Databases
+  - ETL/ELT
+  - Query Engines
+dags:
+  - path: dags/snowpark_ml_demo.py
+  - path: dags/customer_analytics.py
