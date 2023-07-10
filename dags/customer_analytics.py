@@ -32,7 +32,7 @@ _SNOWFLAKE_CONN_ID = 'snowflake_default'
 demo_database = os.environ['DEMO_DATABASE']
 demo_schema = os.environ['DEMO_SCHEMA']
 
-restore_data_uri = 'https://astronomer-demos-public.s3.us-west-2.amazonaws.com/sissy-g-toys-demo/data'
+restore_data_uri = 'https://astronomer-demos-public-readonly.s3.us-west-2.amazonaws.com/sissy-g-toys-demo/data'
 calls_directory_stage = 'call_stage'
 weaviate_backup_bucket = 'weaviate-backup'
 data_sources = ['ad_spend', 'sessions', 'customers', 'payments', 'subscription_periods', 'customer_conversions', 'orders']
