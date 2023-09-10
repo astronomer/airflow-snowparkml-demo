@@ -20,7 +20,7 @@ def setup(snowflake_conn_id:str, admin_role:str, database:str = 'demo', schema:s
                  GRANT CREATE STAGE ON SCHEMA {database}.{schema} TO ROLE {user_role};
             """)
     
-    xcom_setup(hook, database='DEMO', schema='XCOM', user_role=user_role)
+    xcom_setup(hook, database='DEMO', schema='DEMO', user_role=user_role)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(

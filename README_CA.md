@@ -41,7 +41,7 @@ curl -sSL install.astronomer.io | sudo bash -s
 2. Clone this repository:
 ```bash
 git clone https://github.com/astronomer/airflow-snowparkml-demo
-cd airflow-snowparkml-demo
+cd airflow-snowparkml-demo 
 ```
 
 3.  Setup shell environment variables for the demo.  Update values in brackets `<>` and run the commands in the terminal where you will be running the demo.

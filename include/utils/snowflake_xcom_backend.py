@@ -6,8 +6,6 @@ def setup(hook:SnowflakeHook, database:str='DEMO', schema='XCOM', stage='XCOM_ST
     if not user_role:
         user_role = hook._get_conn_params()['role']
 
-#CREATE DATABASE IF NOT EXISTS {database};
-        # CREATE SCHEMA IF NOT EXISTS {database}.{schema};
     hook.run(f'''
         
         CREATE OR REPLACE STAGE {database}.{schema}.{stage} DIRECTORY = (ENABLE = TRUE) ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');

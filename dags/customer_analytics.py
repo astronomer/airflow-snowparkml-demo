@@ -17,31 +17,35 @@ from datetime import datetime
 import os
 from pathlib import Path
 import json
+import pandas as pd
+import numpy as np
 
 from astro import sql as aql 
 from astro.files import File 
 from astro.sql.table import Table 
 from airflow.decorators import dag, task, task_group
-from cosmos.task_group import DbtTaskGroup
+from weaviate.util import generate_uuid5
+# from cosmos.task_group import DbtTaskGroup
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
-from great_expectations_provider.operators.great_expectations import GreatExpectationsOperator
-
+from weaviate_provider.operators.weaviate import WeaviateRestoreOperator, WeaviateRetrieveAllOperator
+# from great_expectations_provider.operators.great_expectations import GreatExpectationsOperator
 
 _SNOWFLAKE_CONN_ID = 'snowflake_default'
+_WEAVIATE_CONN_ID = 'weaviate_default'
 
 demo_database = os.environ['DEMO_DATABASE']
 demo_schema = os.environ['DEMO_SCHEMA']
 
 restore_data_uri = 'https://astronomer-demos-public-readonly.s3.us-west-2.amazonaws.com/sissy-g-toys-demo/data'
 calls_directory_stage = 'call_stage'
-weaviate_backup_bucket = 'weaviate-backup'
+# weaviate_backup_bucket = 'weaviate-backup'
 data_sources = ['ad_spend', 'sessions', 'customers', 'payments', 'subscription_periods', 'customer_conversions', 'orders']
 twitter_sources = ['twitter_comments', 'comment_training']
 weaviate_class_objects = {'CommentTraining': {'count': 1987}, 'CustomerComment': {'count': 12638}, 'CustomerCall': {'count': 43}}
-minio_conn = json.loads(os.environ['AIRFLOW_CONN_MINIO_DEFAULT'])
-weaviate_conn = json.loads(os.environ['AIRFLOW_CONN_WEAVIATE_DEFAULT'])
+# minio_conn = json.loads(os.environ['AIRFLOW_CONN_MINIO_DEFAULT'])
+# weaviate_conn = json.loads(os.environ['AIRFLOW_CONN_WEAVIATE_DEFAULT'])
 
-_DBT_BIN = '/home/astro/.venv/dbt/bin/dbt'
+# _DBT_BIN = '/home/astro/.venv/dbt/bin/dbt'
 
 default_args={
     "temp_data_output": 'table',
@@ -54,99 +58,32 @@ def customer_analytics():
     
     @task_group()
     def enter():
-
+       
         @task()
-        def create_weaviate_backup_bucket() -> str:
-            import minio
-
-            minio_client = minio.Minio(
-                endpoint=minio_conn['extra']['endpoint_url'],
-                access_key=minio_conn['extra']['aws_access_key'],
-                secret_key=minio_conn['extra']['aws_secret_access_key'],
-                secure=False
-            )
-            minio_client.list_buckets()
-
-            try:
-                minio_client.make_bucket(weaviate_backup_bucket)
-            except Exception as e:
-                if e.code == 'BucketAlreadyOwnedByYou':
-                    print(e.code)
-
-            minio_client.list_buckets()
-
-            return weaviate_backup_bucket
-        
-        @task()
-        def restore_weaviate(weaviate_backup_bucket:str, replace_existing=False):
+        def download_weaviate_backup() -> str:
             """
-            This task exists only to speedup the demo. By restoring prefetched embeddings to weaviate the later tasks 
-            will skip embeddings and only make calls to openai for data it hasn't yet embedded.
+            In order to speed up the demo process the data has already been 
+            ingested into weaviate and vectorized.  Upstream tasks importing 
+            to weaviate will skip embeddings and only make calls to openai 
+            for data it hasn't yet embedded. 
+            
+            This task will download the backup.zip and make it available in 
+            a docker mounted filesystem for the weaviate restore task.  
+            Normally this would be in an cloud storage.
+
+            Because it relies on local storage this DAG will not function in
+            hosted airflow.
             """
-            import weaviate 
-            import tempfile
+
             import urllib
             import zipfile
-            import os
-            import warnings
-            import minio
 
             weaviate_restore_uri = f'{restore_data_uri}/weaviate-backup/backup.zip'
 
-            weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                              additional_headers=weaviate_conn['extra']['headers'])
-            assert weaviate_client.cluster.get_nodes_status()[0]['status'] == 'HEALTHY' and weaviate_client.is_live()
+            zip_path, _ = urllib.request.urlretrieve(weaviate_restore_uri)
+            with zipfile.ZipFile(zip_path, "r") as f:
+                f.extractall('/usr/local/airflow/include/weaviate/data/backups')
 
-            minio_client = minio.Minio(
-                endpoint=minio_conn['extra']['endpoint_url'],
-                access_key=minio_conn['extra']['aws_access_key'],
-                secret_key=minio_conn['extra']['aws_secret_access_key'],
-                secure=False
-            )
-
-            if replace_existing:
-                weaviate_client.schema.delete_all()
-            
-            else:
-                existing_classes = [classes['class'] for classes in weaviate_client.schema.get()['classes']]
-                class_collision = set.intersection(set(existing_classes), set(weaviate_class_objects.keys()))
-                if class_collision:
-                    warnings.warn(f'Class objects {class_collision} already exist and replace_existing={replace_existing}. Skipping restore.')
-                    response = 'skipped'
-
-                    return weaviate_conn
-            
-            with tempfile.TemporaryDirectory() as td:
-                zip_path, _ = urllib.request.urlretrieve(weaviate_restore_uri)
-                with zipfile.ZipFile(zip_path, "r") as f:
-                    f.extractall(td)
-
-                for root, dirs, files in os.walk(td, topdown=False):
-                    for name in files:
-                        filename = os.path.join(root, name)
-
-                        minio_client.fput_object(
-                            object_name=os.path.relpath(filename, td),
-                            file_path=filename,
-                            bucket_name=weaviate_backup_bucket,
-                        )
-
-            response = weaviate_client.backup.restore(
-                    backup_id='backup',
-                    backend="s3",
-                    include_classes=list(weaviate_class_objects.keys()),
-                    wait_for_completion=True,
-                )
-
-            #check backup counts
-            for class_object in weaviate_class_objects.keys():
-                expected_count = weaviate_class_objects[class_object]['count']
-                response = weaviate_client.query.aggregate(class_name=class_object).with_meta_count().do()               
-                count = response["data"]["Aggregate"][class_object][0]["meta"]["count"]
-                assert count == expected_count, f"Class {class_object} check failed. Expected {expected_count} objects.  Found {count}"
-            
-            return weaviate_conn
-            
         @task.snowpark_python(snowflake_conn_id=_SNOWFLAKE_CONN_ID)
         def check_model_registry(demo_database:str, demo_schema:str) -> dict: 
             from snowflake.ml.registry import model_registry
@@ -156,12 +93,19 @@ def customer_analytics():
                                                         schema_name=demo_schema)
             
             return {'database': demo_database, 'schema': demo_schema}
-
-        _weaviate_backup_bucket = create_weaviate_backup_bucket()
-        _weaviate_conn = restore_weaviate(_weaviate_backup_bucket)
+        
         _snowpark_model_registry = check_model_registry(demo_database, demo_schema)
+        
+        _restore_weaviate = WeaviateRestoreOperator(task_id='restore_weaviate',
+                                                    backend='filesystem', 
+                                                    weaviate_conn_id=_WEAVIATE_CONN_ID,
+                                                    id='backup',
+                                                    include=list(weaviate_class_objects.keys()),
+                                                    replace_existing=True)
 
-        return _weaviate_backup_bucket, _weaviate_conn, _snowpark_model_registry
+        download_weaviate_backup() >> _restore_weaviate
+
+        return _snowpark_model_registry, _restore_weaviate
     
     @task_group()
     def structured_data():
@@ -171,65 +115,169 @@ def customer_analytics():
             for source in data_sources:
                 aql.load_file(task_id=f'load_{source}',
                     input_file = File(f"{restore_data_uri}/{source}.csv"), 
-                    output_table = Table(name=f'STG_{source.upper()}', conn_id=_SNOWFLAKE_CONN_ID)
+                    output_table = Table(name=f'STG_{source.upper()}', 
+                                         conn_id=_SNOWFLAKE_CONN_ID)
                 )
-
-        @task_group()
-        def data_quality_checks():
-            expectations_dir = Path('include/great_expectations').joinpath(f'expectations')
-            for project in [x[0] for x in os.walk(expectations_dir)][1:]:
-                for expectation in os.listdir(project):
-                    project = project.split('/')[-1]
-                    expectation = expectation.split('.')[0]
-                    GreatExpectationsOperator(
-                        task_id=f"ge_{project}_{expectation}",
-                        data_context_root_dir='include/great_expectations',
-                        conn_id=_SNOWFLAKE_CONN_ID,
-                        expectation_suite_name=f"{project}.{expectation}",
-                        data_asset_name=f"STG_{expectation.upper()}",
-                        fail_task_on_validation_failure=False,
-                        return_json_dict=True,
-                    )
             
         @task_group()
         def transform_structured():
-            jaffle_shop = DbtTaskGroup(
-                dbt_project_name="jaffle_shop",
-                dbt_root_path="/usr/local/airflow/include/dbt",
-                conn_id=_SNOWFLAKE_CONN_ID,
-                dbt_args={"dbt_executable_path": _DBT_BIN},
-                profile_args={
-                    "schema": demo_schema,
-                },
-                test_behavior="after_all",
-            )
+
+            @task.snowpark_python()
+            def jaffle_shop(customers_df:SnowparkTable, orders_df:SnowparkTable, payments_df:SnowparkTable):
+                
+                customer_orders_df = orders_df.group_by('customer_id').agg(F.min('order_date').alias('first_order'),
+                                                                           F.max('order_date').alias('most_recent_order'),
+                                                                           F.count('order_id').alias('number_of_orders'))
+                
+                customer_payments_df = payments_df.join(orders_df, how='left', on='order_id')\
+                                                  .group_by('customer_id')\
+                                                  .agg((F.sum('amount') / 100).alias('total_amount'))
+                
+                customers = customers_df.join(customer_orders_df, how='left', on='customer_id')\
+                                        .join(customer_payments_df, how='left', on='customer_id')\
+                                        .rename('total_amount', 'customer_lifetime_value')
+                
+                payment_types = ['credit_card', 'coupon', 'bank_transfer', 'gift_card']
+                
+                orders = payments_df.drop('payment_id')\
+                                    .pivot('payment_method', payment_types )\
+                                    .agg(F.sum('amount'))\
+                                    .group_by('order_id')\
+                                    .agg({f"'{x}'": "sum" for x in payment_types})\
+                                    .rename({f"SUM('{x.upper()}')": x+'_amount' for x in payment_types})\
+                                    .join(payments_df.group_by('order_id')\
+                                                     .agg(F.sum('amount').alias('total_amount')), on='order_id')\
+                                    .join(orders_df, on='order_id')
+
+                return customers
+
+            @task.snowpark_python()
+            def mrr_playbook(subscription_df:SnowparkTable):
+                from snowflake.snowpark import Window
+
+                from datetime import date
+                day_count = date.today() - date(2018,1,1)
+                months = snowpark_session.generator(F.seq4(), rowcount=day_count.days)\
+                                         .with_column('date_month', F.date_trunc('month', 
+                                                                            F.date_add(F.to_date(F.lit('2018-01-01')), 
+                                                                                       F.row_number().over(Window.order_by('SEQ4(0)')))))\
+                                         .select('date_month').distinct().sort('date_month', ascending=True)
+
+                subscription_periods = subscription_df.with_column('start_date', F.to_date('start_date'))\
+                                                      .with_column('end_date', F.to_date('end_date'))
+                
+                customers = subscription_periods.group_by('customer_id').agg(F.date_trunc('month', F.min('start_date')).alias('date_month_start'),
+                                                                             F.date_trunc('month', F.max('end_date')).alias('date_month_end'))
+                
+                customer_months = customers.join(months, how='inner', on=(months['date_month'] >= customers['date_month_start']) & 
+                                                                         ( months['date_month'] < customers['date_month_end']))\
+                                           .select(['customer_id', 'date_month'])
+                
+                customer_revenue_by_month = customer_months.join(subscription_periods, 
+                                                                how='left',
+                                                                rsuffix='_',
+                                                                on=(customer_months.customer_id == subscription_periods.customer_id) & 
+                                                                    (customer_months.date_month >= subscription_periods.start_date) & 
+                                                                    ((customer_months.date_month < subscription_periods.end_date) |
+                                                                        (subscription_periods.end_date.is_null())))\
+                                                            .fillna(subset=['monthly_amount'], value=0)\
+                                                            .select(F.col('date_month'), F.col('customer_id'), F.col('monthly_amount').alias('mrr'))\
+                                                            .with_column('is_active', F.col('mrr')>0)\
+                                                            .with_column('first_active_month', 
+                                                                         F.when(F.col('is_active'), 
+                                                                            F.min(F.col('date_month')).over(Window.partition_by('customer_id'))))\
+                                                            .with_column('last_active_month', 
+                                                                         F.when(F.col('is_active'), 
+                                                                            F.max(F.col('date_month')).over(Window.partition_by('customer_id'))))\
+                                                            .with_column('is_first_month', F.col('first_active_month') == F.col('date_month'))\
+                                                            .with_column('is_last_month', F.col('last_active_month') == F.col('date_month'))
+                                                            
+                customer_churn_month = customer_revenue_by_month.where('is_last_month')\
+                                                                .select(F.add_months(F.col('date_month'), 1),
+                                                                        'customer_id',
+                                                                        F.to_decimal('mrr', 38, 2),
+                                                                        F.lit(False).alias('is_active'),
+                                                                        'first_active_month',
+                                                                        'last_active_month',
+                                                                        F.lit(False).alias('is_first_month'),
+                                                                        F.lit(False).alias('is_last_month'))
+                
+                customer_date_window = Window.partition_by('customer_id').order_by('date_month')
+
+                mrr = customer_revenue_by_month.union_all(customer_churn_month)\
+                                               .with_column('id', F.md5(F.col('customer_id')))\
+                                               .with_column('previous_month_is_active', 
+                                                            F.lag('is_active', default_value=False).over(customer_date_window))\
+                                               .with_column('previous_month_mrr', 
+                                                            F.lag('mrr', default_value=0).over(customer_date_window))\
+                                               .with_column('mrr_change', F.col('mrr') - F.col('previous_month_mrr'))\
+                                               .with_column('change_category', 
+                                                            F.when(F.col('is_first_month'), 'new')\
+                                                             .when(F.not_(F.col('is_active') & F.col('previous_month_is_active')), 'churn')\
+                                                             .when(F.col('is_active') & F.not_(F.col('previous_month_is_active')), 'reactivation')\
+                                                             .when(F.col('mrr_change') > 0, 'upgrade')\
+                                                             .when(F.col('mrr_change') < 0, 'downgrade')
+                                                            )\
+                                               .with_column('renewal_amount', F.least(F.col('mrr'), F.col('previous_month_mrr')))
+
+                return mrr
             
-            attribution_playbook = DbtTaskGroup(
-                dbt_project_name="attribution_playbook",
-                dbt_root_path="/usr/local/airflow/include/dbt",
-                conn_id=_SNOWFLAKE_CONN_ID,
-                dbt_args={"dbt_executable_path": _DBT_BIN},
-                profile_args={
-                    "schema": demo_schema,
-                },
-            )
+            @task.snowpark_python()
+            def attribution_playbook(customer_conversions_df:SnowparkTable, sessions_df:SnowparkTable):
+                from snowflake.snowpark import Window
 
-            mrr_playbook = DbtTaskGroup(
-                dbt_project_name="mrr_playbook",
-                dbt_root_path="/usr/local/airflow/include/dbt",
-                conn_id=_SNOWFLAKE_CONN_ID,
-                dbt_args={"dbt_executable_path": _DBT_BIN},
-                profile_args={
-                    "schema": demo_schema,
-                },
-            )
+                customer_window = Window.partition_by('customer_id')
 
-        load_structured_data() >> \
-            data_quality_checks() >> \
-                transform_structured()
+                attribution_touches = sessions_df.join(customer_conversions_df, on='customer_id')\
+                                                .filter((F.col('started_at') <= F.col('converted_at')) & 
+                                                        (F.col('started_at') >= F.date_add(F.col('converted_at'), -30)))\
+                                                .with_column('total_sessions', F.count('customer_id')\
+                                                                                .over(customer_window))\
+                                                .with_column('session_index', F.row_number()\
+                                                                                .over(customer_window\
+                                                                                .order_by('started_at')))\
+                                                .with_column('first_touch_points', 
+                                                            F.when(F.col('session_index') == 1, 1)\
+                                                            .otherwise(0))\
+                                                .with_column('last_touch_points', 
+                                                            F.when(F.col('session_index') == F.col('total_sessions'), 1)\
+                                                            .otherwise(0))\
+                                                .with_column('forty_twenty_forty_points', 
+                                                            F.when(F.col('total_sessions') == 1, 1)\
+                                                            .when(F.col('total_sessions') == 2, .5)\
+                                                            .when(F.col('session_index') == 1, .4)\
+                                                            .when(F.col('session_index') == F.col('total_sessions'), .4)\
+                                                            .otherwise(F.lit(0.2) / (F.col('total_sessions') - 2)))\
+                                                .with_column('linear_points', F.lit(1) / F.col('total_sessions'))\
+                                                .with_column('first_touch_revenue', 
+                                                             F.col('revenue') * F.col('first_touch_points'))\
+                                                .with_column('last_touch_revenue', 
+                                                             F.col('revenue') * F.col('last_touch_points'))\
+                                                .with_column('forty_twenty_forty_revenue', 
+                                                             F.col('revenue') * F.col('forty_twenty_forty_points'))\
+                                                .with_column('linear_revenue', 
+                                                             F.col('revenue') * (1 / F.col('total_sessions')))
+                return attribution_touches
+
+            _customers = jaffle_shop(customers_df=SnowparkTable('stg_customers'),
+                                     orders_df=SnowparkTable('stg_orders'),
+                                     payments_df=SnowparkTable('stg_payments'))
+            
+            _mrr = mrr_playbook(subscription_df=SnowparkTable('stg_subscription_periods'))
+
+            _attribution_touches = attribution_playbook(customer_conversions_df=SnowparkTable('stg_customer_conversions'), 
+                                                        sessions_df=SnowparkTable('stg_sessions'))
+            
+            return _attribution_touches, _mrr, _customers
+
+        _structured_data = load_structured_data()
+        _attribution_touches, _mrr, _customers = transform_structured()
+        _structured_data >> [_attribution_touches, _mrr, _customers]
+
+        return _attribution_touches, _mrr, _customers
 
     @task_group()
-    def unstructured_data(weaviate_conn:dict):
+    def unstructured_data():
         
         @task_group()
         def load_unstructured_data():
@@ -242,8 +290,8 @@ def customer_analytics():
                 import requests
 
                 snowpark_session.sql(f"""CREATE OR REPLACE STAGE {calls_directory_stage} 
-                                        DIRECTORY = (ENABLE = TRUE) 
-                                        ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+                                         DIRECTORY = (ENABLE = TRUE) 
+                                         ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
                                     """).collect()
 
                 with tempfile.TemporaryDirectory() as td:
@@ -262,18 +310,21 @@ def customer_analytics():
 
                 return calls_directory_stage
 
-            _calls_directory_stage = load_support_calls_to_stage(restore_data_uri=restore_data_uri, calls_directory_stage=calls_directory_stage)
+            _calls_directory_stage = load_support_calls_to_stage(restore_data_uri=restore_data_uri, 
+                                                                 calls_directory_stage=calls_directory_stage)
             
             _stg_comment_table = aql.load_file(task_id='load_twitter_comments',
-                input_file = File(f'{restore_data_uri}/twitter_comments.parquet'),
-                output_table = Table(name='STG_TWITTER_COMMENTS', conn_id=_SNOWFLAKE_CONN_ID),
-                use_native_support=False,
+                                               input_file = File(f'{restore_data_uri}/twitter_comments.parquet'),
+                                               output_table = Table(name='STG_TWITTER_COMMENTS', 
+                                                                    conn_id=_SNOWFLAKE_CONN_ID),
+                                               use_native_support=False,
             )
 
             _stg_training_table = aql.load_file(task_id='load_comment_training',
-                input_file = File(f'{restore_data_uri}/comment_training.parquet'), 
-                output_table = Table(name='STG_COMMENT_TRAINING', conn_id=_SNOWFLAKE_CONN_ID),
-                use_native_support=False,
+                                                input_file = File(f'{restore_data_uri}/comment_training.parquet'), 
+                                                output_table = Table(name='STG_COMMENT_TRAINING', 
+                                                                     conn_id=_SNOWFLAKE_CONN_ID),
+                                                use_native_support=False,
             )
 
             return _calls_directory_stage, _stg_comment_table, _stg_training_table
@@ -313,319 +364,130 @@ def customer_analytics():
         _stg_calls_table = transcribe_calls(calls_directory_stage=_calls_directory_stage)
 
         @task_group()
-        def generate_embeddings(weaviate_conn:dict): 
+        def generate_embeddings(): 
+
+            @task.snowpark_python()
+            def get_training_pandas(stg_training_table:SnowparkTable):
+                return stg_training_table.to_pandas()
             
-            @task.snowpark_virtualenv(requirements=['weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-            def generate_training_embeddings(weaviate_conn:dict, stg_training_table:SnowparkTable):
-                import weaviate
-                from weaviate.util import generate_uuid5
-                from time import sleep
-                import numpy as np
+            @task.snowpark_python()
+            def get_comment_pandas(stg_comment_table:SnowparkTable):
+                return stg_comment_table.to_pandas()
+            
+            @task.snowpark_python()
+            def get_calls_pandas(stg_calls_table:SnowparkTable):
+                return stg_calls_table.to_pandas()
+            
+            @task.weaviate_import()
+            def generate_training_embeddings(stg_training_table:pd.DataFrame):
+                """
+                Because we restored weaviate from pre-built embeddings this task should "skip" 
+                re-importing each row.
+                """
 
-                df = stg_training_table.to_pandas()
+                df = stg_training_table
+                df.rename({'REVIEW_TEXT': 'rEVIEW_TEXT', 'LABEL': 'lABEL'}, axis=1, inplace=True)
 
-                df['LABEL'] = df['LABEL'].apply(str)
+                df['lABEL'] = df['lABEL'].apply(str)
 
                 #openai works best without empty lines or new lines
                 df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
-                df['REVIEW_TEXT'] = df['REVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
+                df['rEVIEW_TEXT'] = df['rEVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
+                df['UUID'] = df.apply(lambda x: generate_uuid5(x.to_dict(), 'CommentTraining'), axis=1)
 
-                weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                                  additional_headers=weaviate_conn['extra']['headers'])
-                assert weaviate_client.cluster.get_nodes_status()[0]['status'] == 'HEALTHY' and weaviate_client.is_live()
-
-                class_obj = {
-                    "class": "CommentTraining",
-                    "vectorizer": "text2vec-openai",
-                    "properties": [
-                        {
-                            "name": "rEVIEW_TEXT",
-                            "dataType": ["text"]
-                        },
-                        {
-                            "name": "lABEL",
-                            "dataType": ["string"],
-                            "moduleConfig": {"text2vec-openai": {"skip": True}}
-                        }
-                    ]
-                }
-                try:
-                    weaviate_client.schema.create_class(class_obj)
-                except Exception as e:
-                    if isinstance(e, weaviate.UnexpectedStatusCodeException) and "already used as a name for an Object class" in e.message:                                
-                        print("schema exists.")
-                    else:
-                        raise e
-                    
-                # #For openai subscription without rate limits go the fast route
-                # uuids=[]
-                # with client.batch as batch:
-                #     batch.batch_size=100
-                #     for properties in df.to_dict(orient='index').items():
-                #         uuid=client.batch.add_data_object(properties[1], class_obj['class'])
-                #         uuids.append(uuid)
-
-                #For openai with rate limit go the VERY slow route
-                #Because we restored weaviate from pre-built embeddings this shouldn't be too long.
-                uuids = []
-                for row_id, row in df.T.items():
-                    data_object = {'rEVIEW_TEXT': row[0], 'lABEL': row[1]}
-                    uuid = generate_uuid5(data_object, class_obj['class'])
-                    sleep_backoff=.5
-                    success = False
-                    while not success:
-                        try:
-                            if weaviate_client.data_object.exists(uuid=uuid, class_name=class_obj['class']):
-                                print(f'UUID {uuid} exists.  Skipping.')
-                            else:
-                                uuid = weaviate_client.data_object.create(
-                                    data_object=data_object, 
-                                    uuid=uuid, 
-                                    class_name=class_obj['class'])
-                                print(f'Added row {row_id} with uuid {uuid}, sleeping for {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            success=True
-                            uuids.append(uuid)
-                        except Exception as e:
-                            if isinstance(e, weaviate.UnexpectedStatusCodeException) and "Rate limit reached" in e.message:                                
-                                sleep_backoff+=1
-                                print(f'Rate limit reached. Sleeping {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            else:
-                                raise(e)
-                
-                df['UUID']=uuids
-
-                return snowpark_session.create_dataframe(df)
-
-            @task.snowpark_virtualenv(requirements=['weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-            def generate_twitter_embeddings(weaviate_conn:dict, stg_comment_table:SnowparkTable):
-                import weaviate
-                from weaviate.util import generate_uuid5
-                from time import sleep
-                import numpy as np
-                import pandas as pd
-                                
-                df = stg_comment_table.to_pandas()
-
-                df['CUSTOMER_ID'] = df['CUSTOMER_ID'].apply(str)
-                df['DATE'] = pd.to_datetime(df['DATE']).dt.strftime("%Y-%m-%dT%H:%M:%S-00:00")
-
-                #openai embeddings works best without empty lines or new lines
-                df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
-                df['REVIEW_TEXT'] = df['REVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
-                
-                weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                                  additional_headers=weaviate_conn['extra']['headers'])
-                assert weaviate_client.cluster.get_nodes_status()[0]['status'] == 'HEALTHY' and weaviate_client.is_live()
-
-                class_obj = {
-                    "class": "CustomerComment",
-                    "vectorizer": "text2vec-openai",
-                    "properties": [
-                        {
-                        "name": "CUSTOMER_ID",
-                        "dataType": ["string"],
-                        "moduleConfig": {"text2vec-openai": {"skip": True}}
-                        },
-                        {
-                        "name": "DATE",
-                        "dataType": ["date"],
-                        "moduleConfig": {"text2vec-openai": {"skip": True}}
-                        },
-                        {
-                        "name": "REVIEW_TEXT",
-                        "dataType": ["text"]
-                        }
-                    ]
-                }
-                            
-                try:
-                    weaviate_client.schema.create_class(class_obj)
-                except Exception as e:
-                    if isinstance(e, weaviate.UnexpectedStatusCodeException) and \
-                            "already used as a name for an Object class" in e.message:                                
-                        print("schema exists.")
-                    else:
-                        raise e
-                                
-                # #For openai subscription without rate limits go the fast route
-                # uuids=[]
-                # with client.batch as batch:
-                #     batch.batch_size=100
-                #     for properties in df.to_dict(orient='index').items():
-                #         uuid=client.batch.add_data_object(properties[1], class_obj['class'])
-                #         uuids.append(uuid)
-
-                #For openai with rate limit go the VERY slow route
-                #Because we restored weaviate from pre-built embeddings this shouldn't be too long.
-                uuids = []
-                for row_id, row in df.T.items():
-                    data_object = {'cUSTOMER_ID': row[0], 'dATE': row[1], 'rEVIEW_TEXT': row[2]}
-                    uuid = generate_uuid5(data_object, class_obj['class'])
-                    sleep_backoff=.5
-                    success = False
-                    while not success:
-                        try:
-                            if weaviate_client.data_object.exists(uuid=uuid, class_name=class_obj['class']):
-                                print(f'UUID {uuid} exists.  Skipping.')
-                            else:
-                                uuid = weaviate_client.data_object.create(
-                                            data_object=data_object, 
-                                            uuid=uuid, 
-                                            class_name=class_obj['class']
-                                        )
-                                            
-                                print(f'Added row {row_id} with uuid {uuid}, sleeping for {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            success=True
-                            uuids.append(uuid)
-                        except Exception as e:
-                            if isinstance(e, weaviate.UnexpectedStatusCodeException) and "Rate limit reached" in e.message:                                
-                                sleep_backoff+=1
-                                print(f'Rate limit reached. Sleeping {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            else:
-                                raise(e)
-
-                df['UUID']=uuids
-                df['DATE'] = pd.to_datetime(df['DATE'])
-
-                return snowpark_session.create_dataframe(df)
+                return {"data": df, 
+                        "class_name": 'CommentTraining', 
+                        "uuid_column": "UUID", 
+                        "batch_size": 1000, 
+                        "error_threshold": 0}
             
-            @task.snowpark_virtualenv(requirements=['weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-            def generate_call_embeddings(weaviate_conn:dict, stg_calls_table:SnowparkTable):
-                import weaviate
-                from weaviate.util import generate_uuid5
-                from time import sleep
-                import numpy as np
+            @task.weaviate_import()
+            def generate_twitter_embeddings(stg_comment_table:pd.DataFrame):
+                """
+                Because we restored weaviate from pre-built embeddings this task should "skip" 
+                re-importing each row.
+                """
 
-                df = stg_calls_table.to_pandas()
+                df = stg_comment_table
+                df.rename({'CUSTOMER_ID': 'cUSTOMER_ID', 'REVIEW_TEXT': 'rEVIEW_TEXT', 'DATE': 'dATE'}, axis=1, inplace=True)
 
-                df['CUSTOMER_ID'] = df['CUSTOMER_ID'].apply(str)
+                df['cUSTOMER_ID'] = df['cUSTOMER_ID'].apply(str)
+                df['dATE'] = pd.to_datetime(df['dATE']).dt.strftime("%Y-%m-%dT%H:%M:%S-00:00")
 
-                #openai embeddings works best without empty lines or new lines
+                #openai works best without empty lines or new lines
                 df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
-                df['TRANSCRIPT'] = df['TRANSCRIPT'].apply(lambda x: x.replace("\n",""))
+                df['rEVIEW_TEXT'] = df['rEVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
 
-                weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                                  additional_headers=weaviate_conn['extra']['headers'])
-                assert weaviate_client.cluster.get_nodes_status()[0]['status'] == 'HEALTHY' and weaviate_client.is_live()
+                df['UUID'] = df.apply(lambda x: generate_uuid5(x.to_dict(), 'CustomerComment'), axis=1)
 
-                class_obj = {
-                    "class": "CustomerCall",
-                    "vectorizer": "text2vec-openai",
-                    "properties": [
-                        {
-                        "name": "CUSTOMER_ID",
-                        "dataType": ["string"],
-                        "moduleConfig": {"text2vec-openai": {"skip": True}}
-                        },
-                        {
-                        "name": "RELATIVE_PATH",
-                        "dataType": ["string"],
-                        "moduleConfig": {"text2vec-openai": {"skip": True}}
-                        },
-                        {
-                        "name": "TRANSCRIPT",
-                        "dataType": ["text"]
-                        }
-                    ]
-                }
-                
-                try:
-                    weaviate_client.schema.create_class(class_obj)
-                except Exception as e:
-                    if isinstance(e, weaviate.UnexpectedStatusCodeException) and \
-                            "already used as a name for an Object class" in e.message:                                
-                        print("schema exists.")
-                    
-                # #For openai subscription without rate limits go the fast route
-                # uuids=[]
-                # with client.batch as batch:
-                #     batch.batch_size=100
-                #     for properties in df.to_dict(orient='index').items():
-                #         uuid=client.batch.add_data_object(properties[1], class_obj['class'])
-                #         uuids.append(uuid)
+                return {"data": df, 
+                        "class_name": 'CustomerComment', 
+                        "uuid_column": "UUID", 
+                        "batch_size": 1000, 
+                        "error_threshold": 0}
 
-                #For openai with rate limit go the VERY slow route
-                #Because we restored weaviate from pre-built embeddings this shouldn't be too long.
-                uuids = []
-                for row_id, row in df.T.items():
-                    data_object = {'cUSTOMER_ID': row[0], 'rELATIVE_PATH': row[1], 'tRANSCRIPT': row[2]}
-                    uuid = generate_uuid5(data_object, class_obj['class'])
-                    sleep_backoff=.5
-                    success = False
-                    while not success:
-                        try:
-                            if weaviate_client.data_object.exists(uuid=uuid, class_name=class_obj['class']):
-                                print(f'UUID {uuid} exists.  Skipping.')
-                            else:
-                                uuid = weaviate_client.data_object.create(
-                                            data_object=data_object, 
-                                            uuid=uuid, 
-                                            class_name=class_obj['class']
-                                        )   
-                                print(f'Added row {row_id} with uuid {uuid}, sleeping for {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            success=True
-                            uuids.append(uuid)
-                        except Exception as e:
-                            if isinstance(e, weaviate.UnexpectedStatusCodeException) and "Rate limit reached" in e.message:                                
-                                sleep_backoff+=1
-                                print(f'Rate limit reached. Sleeping {sleep_backoff} seconds.')
-                                sleep(sleep_backoff)
-                            else:
-                                raise(e)
+            @task.weaviate_import()
+            def generate_call_embeddings(stg_calls_table:pd.DataFrame):
+                """
+                Because we restored weaviate from pre-built embeddings this task should "skip" 
+                re-importing each row.
+                """
                 
-                df['UUID']=uuids
-                
-                return snowpark_session.create_dataframe(df)
-                            
-            _training_table = generate_training_embeddings(weaviate_conn=weaviate_conn, stg_training_table=_stg_training_table)
-            _comment_table = generate_twitter_embeddings(weaviate_conn=weaviate_conn, stg_comment_table=_stg_comment_table)
-            _calls_table = generate_call_embeddings(weaviate_conn=weaviate_conn, stg_calls_table=_stg_calls_table)
+                df = stg_calls_table
+                df.rename({'CUSTOMER_ID': 'cUSTOMER_ID', 'TRANSCRIPT': 'tRANSCRIPT', 'RELATIVE_PATH': 'rELATIVE_PATH'}, axis=1, inplace=True)
+
+                df['cUSTOMER_ID'] = df['cUSTOMER_ID'].apply(str)
+
+                #openai works best without empty lines or new lines
+                df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
+                df['tRANSCRIPT'] = df['tRANSCRIPT'].apply(lambda x: x.replace("\n",""))
+
+                df['UUID'] = df.apply(lambda x: generate_uuid5(x.to_dict(), 'CustomerCall'), axis=1)
+
+                return {"data": df, 
+                        "class_name": 'CustomerCall', 
+                        "uuid_column": "UUID", 
+                        "batch_size": 1000, 
+                        "error_threshold": 0}
+
+            _training_table = get_training_pandas(stg_training_table=_stg_training_table)
+            _training_table = generate_training_embeddings(stg_training_table=_training_table)
+            
+            _comment_table = get_comment_pandas(stg_comment_table=_stg_comment_table)
+            _comment_table = generate_twitter_embeddings(stg_comment_table=_comment_table)
+            
+            _calls_table = get_calls_pandas(stg_calls_table=_stg_calls_table)
+            _calls_table = generate_call_embeddings(stg_calls_table=_calls_table)
 
             return _training_table, _comment_table, _calls_table
-
-        _training_table, _comment_table, _calls_table = generate_embeddings(weaviate_conn=weaviate_conn) 
-            
-        return _training_table, _comment_table, _calls_table
         
-    @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'scikit-learn==1.2.2', 'weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-    def train_sentiment_classifier(training_table:SnowparkTable, weaviate_conn:dict, snowpark_model_registry:dict):
+        _training_table, _comment_table, _calls_table = generate_embeddings()
+
+        return _training_table, _comment_table, _calls_table
+    
+    @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'scikit-learn==1.2.2', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+    def train_sentiment_classifier(class_name:str, snowpark_model_registry:dict):
         from snowflake.ml.registry import model_registry
         import numpy as np
+        import pandas as pd
         from sklearn.model_selection import train_test_split 
         from lightgbm import LGBMClassifier
-        import weaviate
         from uuid import uuid1
+        from weaviate_provider.hooks.weaviate import WeaviateHook
 
-        model_version = uuid1().urn
-        model_name='sentiment_classifier'
-
-        weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                          additional_headers=weaviate_conn['extra']['headers'])
-        
-        weaviate_status = weaviate_client.cluster.get_nodes_status()[0]['status'] 
-        assert weaviate_status == 'HEALTHY' and weaviate_client.is_live()
-        
         registry = model_registry.ModelRegistry(session=snowpark_session, 
                                                 database_name=snowpark_model_registry['database'], 
                                                 schema_name=snowpark_model_registry['schema'])
         
-        df = training_table.with_column('LABEL', F.col('LABEL').astype('int'))\
-                      .with_column('REVIEW_TEXT', F.regexp_replace(F.col('REVIEW_TEXT'), F.lit('^\s*$')))\
-                      .filter(F.col('REVIEW_TEXT') != '')\
-                      .with_column('REVIEW_TEXT', F.regexp_replace(F.col('REVIEW_TEXT'), F.lit('\n'), F.lit(' ')))\
-                      .to_pandas()
+        weaviate_client = WeaviateHook('weaviate_default').get_conn()
 
-        #read from pre-existing embeddings in weaviate
-        df['VECTOR'] = df.apply(lambda x: weaviate_client.data_object.get(class_name='CommentTraining', 
-                                                                          uuid=x.UUID, with_vector=True)['vector'], 
-                                                                          axis=1)
-        
-        X_train, X_test, y_train, y_test = train_test_split(df['VECTOR'], df['LABEL'], test_size=.3, random_state=1883)
+        df = pd.DataFrame(weaviate_client.data_object.get(with_vector=True, class_name=class_name)['objects'])
+        df = pd.concat([pd.json_normalize(df['properties']), df['vector']], axis=1)
+
+        model_version = uuid1().urn
+        model_name='sentiment_classifier'
+
+        X_train, X_test, y_train, y_test = train_test_split(df['vector'], df['lABEL'], test_size=.3, random_state=1883)
         X_train = np.array(X_train.values.tolist())
         y_train = np.array(y_train.values.tolist())
         X_test = np.array(X_test.values.tolist())
@@ -641,16 +503,21 @@ def customer_analytics():
             sample_input_data=X_test[0].reshape(1,-1),
             tags={'stage': 'dev', 'model_type': 'lightgbm.LGBMClassifier'})
         
-        return {'id': model_id, 'name': model_name, 'version':model_version}
+        return {'name': model_id.get_name(), 'version':model_id.get_version()}
 
     @task_group()
     def score_sentiment():
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-        def call_sentiment(calls_table:SnowparkTable, weaviate_conn:dict, snowpark_model_registry:dict, model:dict):
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        def call_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
             from snowflake.ml.registry import model_registry
-            import weaviate
             import numpy as np
+            import pandas as pd
+            from weaviate_provider.hooks.weaviate import WeaviateHook
+            weaviate_client = WeaviateHook('weaviate_default').get_conn()
+
+            df = pd.DataFrame(weaviate_client.data_object.get(with_vector=True, class_name=class_name)['objects'])
+            df = pd.concat([pd.json_normalize(df['properties']), df['vector']], axis=1)
 
             registry = model_registry.ModelRegistry(session=snowpark_session, 
                                                     database_name=snowpark_model_registry['database'], 
@@ -658,28 +525,22 @@ def customer_analytics():
             
             metrics = registry.get_metrics(model_name=model['name'], model_version=model['version'])
             model = registry.load_model(model_name=model['name'], model_version=model['version'])
-
-            df = calls_table.to_pandas()
-
-            weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                              additional_headers=weaviate_conn['extra']['headers'])
             
-            weaviate_status = weaviate_client.cluster.get_nodes_status()[0]['status'] 
-            assert weaviate_status == 'HEALTHY' and weaviate_client.is_live()
-            
-            df['VECTOR'] = df.apply(lambda x: weaviate_client.data_object.get(class_name='CustomerCall', 
-                                                                              uuid=x.UUID, with_vector=True)['vector'], 
-                                                                              axis=1)
-            
-            df['SENTIMENT'] = model.predict_proba(np.stack(df['VECTOR'].values))[:,1]
+            df['sentiment'] = model.predict_proba(np.stack(df['vector'].values))[:,1]
 
-            return snowpark_session.create_dataframe(df)
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'weaviate-client==3.15.4'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-        def twitter_sentiment(comment_table:SnowparkTable, weaviate_conn:dict, snowpark_model_registry:dict, model:dict):
+            return snowpark_session.create_dataframe(df.rename(columns=str.upper))
+
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        def twitter_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
             from snowflake.ml.registry import model_registry
-            import weaviate
             import numpy as np
+            import pandas as pd
+            from weaviate_provider.hooks.weaviate import WeaviateHook
+            weaviate_client = WeaviateHook('weaviate_default').get_conn()
+
+            df = pd.DataFrame(weaviate_client.data_object.get(with_vector=True, class_name=class_name)['objects'])
+            df = pd.concat([pd.json_normalize(df['properties']), df['vector']], axis=1)
             
             registry = model_registry.ModelRegistry(session=snowpark_session, 
                                                     database_name=snowpark_model_registry['database'], 
@@ -688,28 +549,15 @@ def customer_analytics():
             metrics = registry.get_metrics(model_name=model['name'], model_version=model['version'])
             model = registry.load_model(model_name=model['name'], model_version=model['version'])
             
-            df = comment_table.to_pandas()
+            df['sentiment'] = model.predict_proba(np.stack(df['vector'].values))[:,1]
 
-            weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                              additional_headers=weaviate_conn['extra']['headers'])
-            
-            weaviate_status = weaviate_client.cluster.get_nodes_status()[0]['status'] 
-            assert weaviate_status == 'HEALTHY' and weaviate_client.is_live()
-            
-            df['VECTOR'] = df.apply(lambda x: weaviate_client.data_object.get(class_name='CustomerComment', 
-                                                                              uuid=x.UUID, with_vector=True)['vector'], 
-                                                                              axis=1)
-            
-            df['SENTIMENT'] = model.predict_proba(np.stack(df['VECTOR'].values))[:,1]
-
-            return snowpark_session.create_dataframe(df)
+            return snowpark_session.create_dataframe(df.rename(columns=str.upper))
         
-        _pred_calls_table = call_sentiment(calls_table=_calls_table,
-                                           weaviate_conn=weaviate_conn, 
+        _pred_calls_table = call_sentiment(class_name='CustomerCall',
                                            snowpark_model_registry=_snowpark_model_registry, 
                                            model=_model)
-        _pred_comment_table = twitter_sentiment(comment_table=_comment_table, 
-                                                weaviate_conn=weaviate_conn, 
+        
+        _pred_comment_table = twitter_sentiment(class_name='CustomerComment',
                                                 snowpark_model_registry=_snowpark_model_registry, 
                                                 model=_model)
 
@@ -719,18 +567,23 @@ def customer_analytics():
     def exit():
 
         @task.snowpark_python(snowflake_conn_id=_SNOWFLAKE_CONN_ID)
-        def create_presentation_tables(pred_calls_table:SnowparkTable, pred_comment_table:SnowparkTable):
+        def create_presentation_tables(attribution_df:SnowparkTable, 
+                                       mrr_df:SnowparkTable, 
+                                       customers_df:SnowparkTable,
+                                       pred_calls_table:SnowparkTable, 
+                                       pred_comment_table:SnowparkTable):
             
-            attribution_df = snowpark_session.table('ATTRIBUTION_TOUCHES')
-            rev_df = snowpark_session.table('MRR').drop(['ID'])
-            customers_df = snowpark_session.table('CUSTOMERS')\
-                                .with_column('CLV', F.round(F.col('CUSTOMER_LIFETIME_VALUE'), 2))
+            # attribution_df = snowpark_session.table('ATTRIBUTION_TOUCHES')
+            # mrr_df = snowpark_session.table('MRR').drop(['ID'])
+            # customers_df = snowpark_session.table('CUSTOMERS')\
+            customers_df = customers_df.with_column('CLV', 
+                                                    F.round(F.col('CUSTOMER_LIFETIME_VALUE'), 2))
 
             sentiment_df =  pred_calls_table.group_by(F.col('CUSTOMER_ID'))\
                                             .agg(F.avg('SENTIMENT').alias('CALLS_SENTIMENT'))\
                                             .join(pred_comment_table.group_by(F.col('CUSTOMER_ID'))\
                                                     .agg(F.avg('SENTIMENT').alias('COMMENTS_SENTIMENT')), 
-                                                on='CUSTOMER_ID',
+                                                on='cUSTOMER_ID',
                                                 how='right')\
                                             .fillna(0, subset=['CALLS_SENTIMENT'])\
                                             .with_column('SENTIMENT_SCORE', 
@@ -767,7 +620,7 @@ def customer_analytics():
                                  .write.save_as_table('PRES_CLV', mode='overwrite')
             
             churn_df = customers_df.select(['CUSTOMER_ID', 'FIRST_NAME', 'LAST_NAME', 'CLV'])\
-                                   .join(rev_df.select(['CUSTOMER_ID', 
+                                   .join(mrr_df.select(['CUSTOMER_ID', 
                                                         'FIRST_ACTIVE_MONTH', 
                                                         'LAST_ACTIVE_MONTH', 
                                                         'CHANGE_CATEGORY']), 
@@ -793,54 +646,26 @@ def customer_analytics():
 
             return 'success'
         
-        @task()
-        def backup_weaviate(replace_existing=False):
-            import weaviate 
-            import minio
-
-            weaviate_client = weaviate.Client(url=weaviate_conn['extra']['endpoint_url'], 
-                                              additional_headers=weaviate_conn['extra']['headers'])
-            assert weaviate_client.cluster.get_nodes_status()[0]['status'] == 'HEALTHY' and weaviate_client.is_live()
-
-            if replace_existing:
-                minio_client = minio.Minio(
-                    endpoint=minio_conn['extra']['endpoint_url'],
-                    access_key=minio_conn['extra']['aws_access_key'],
-                    secret_key=minio_conn['extra']['aws_secret_access_key'],
-                    secure=False
-                )
-                for obj in minio_client.list_objects(bucket_name=weaviate_backup_bucket, prefix='backup', recursive=True):
-                    minio_client.remove_object(bucket_name=weaviate_backup_bucket, object_name=obj.object_name)
-                
-
-            response = weaviate_client.backup.create(
-                    backup_id='backup',
-                    backend="s3",
-                    include_classes=list(weaviate_class_objects.keys()),
-                    wait_for_completion=True,
-                )
-            return weaviate_conn
-                            
-        create_presentation_tables(pred_calls_table=_pred_calls_table, 
-                                    pred_comment_table=_pred_comment_table)
-
-        backup_weaviate(replace_existing=True)
+        create_presentation_tables(attribution_df=_attribution_touches, 
+                                   mrr_df=_mrr, 
+                                   customers_df=_customers,
+                                   pred_calls_table=_pred_calls_table, 
+                                   pred_comment_table=_pred_comment_table)
         
-    _weaviate_backup_bucket, _weaviate_conn, _snowpark_model_registry = enter()
+    _snowpark_model_registry, _restore_weaviate = enter()
 
-    _structured_data = structured_data()
+    _attribution_touches, _mrr, _customers = structured_data()
     
-    _training_table, _comment_table, _calls_table = unstructured_data(weaviate_conn=_weaviate_conn,)
-    
-    _model = train_sentiment_classifier(training_table=_training_table,
-                                           weaviate_conn=_weaviate_conn,
-                                           snowpark_model_registry=_snowpark_model_registry)
+    _training_table, _comment_table, _calls_table = unstructured_data()
+
+    _model = train_sentiment_classifier(class_name='CommentTraining',
+                                        snowpark_model_registry=_snowpark_model_registry)
     
     _pred_calls_table, _pred_comment_table = score_sentiment()
     
     _exit = exit()
     
-    _structured_data >> _model >> _exit
+    _restore_weaviate >> _training_table >> _model
 
 customer_analytics()
 
@@ -850,3 +675,37 @@ def test():
     from snowflake.snowpark import functions as F, types as T
     conn_params = SnowflakeHook('snowflake_default')._get_conn_params()
     snowpark_session = SnowparkSession.builder.configs(conn_params).create()
+    from weaviate_provider.hooks.weaviate import WeaviateHook
+    weaviate_client = WeaviateHook('weaviate_default').get_conn()
+
+    for class_object in weaviate_class_objects.keys():
+        expected_count = weaviate_class_objects[class_object]['count']
+        expected_count
+        response = weaviate_client.query.aggregate(class_name=class_object).with_meta_count().do()
+        count = response["data"]["Aggregate"][class_object][0]["meta"]["count"]
+        count
+
+    pd.DataFrame(weaviate_client.data_object.get(with_vector=True, class_name='CommentTraining')['objects']).columns
+
+    path = "@DEMO.DEMO.XCOM_STAGE/customer_analytics/unstructured_data.generate_embeddings.get_training_pandas/manual__2023-09-10T15:57:47.206033+00:00/0/return_value.parquet"
+    path = "@DEMO.DEMO.XCOM_STAGE/customer_analytics/unstructured_data.generate_embeddings.get_comment_pandas/manual__2023-09-10T15:57:47.206033+00:00/0/return_value.parquet"
+    snowpark_session.file.get(path, 'include/')
+    df=pd.read_parquet('include/return_value.parquet')
+
+    df.rename({'CUSTOMER_ID': 'cUSTOMER_ID', 'REVIEW_TEXT': 'rEVIEW_TEXT', 'DATE': 'dATE'}, axis=1, inplace=True)
+    df['cUSTOMER_ID'] = df['cUSTOMER_ID'].apply(str)
+    df['dATE'] = pd.to_datetime(df['dATE']).dt.strftime("%Y-%m-%dT%H:%M:%S-00:00")
+    df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
+    df['rEVIEW_TEXT'] = df['rEVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
+
+    generate_uuid5({'cUSTOMER_ID': df.iloc[0][0], 'rEVIEW_TEXT': df.iloc[0][0], 'dATE': df.iloc[0][1]}, 'CommentTraining')
+
+    generate_uuid5(df.iloc[0].to_dict(), 'CommentTraining')
+    df.iloc[0]
+    df.apply(lambda x: generate_uuid5(x.to_dict(), 'CommentTraining'), axis=1).iloc[0]
+
+    df = df[['cUSTOMER_ID', 'rEVIEW_TEXT', 'dATE']]
+    generate_uuid5(df.iloc[0].to_dict(), 'CommentTraining')
+
+    weaviate_client.query.get("JeopardyQuestion").with_additional("vector").with_limit(1).do()
+    
