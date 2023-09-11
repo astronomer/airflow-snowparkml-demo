@@ -6,13 +6,12 @@ This demo also shows the use of the Snowflake XCOM backend which supports securi
 
 This workflow includes:
 - sourcing structured, unstructured and semistructured data from different systems
+- extract, transform and load with [Snowpark Python provider for Airflow](https://github.com/astronomer/astro-provider-snowflake)
 - ingest with Astronomer's [python SDK for Airflow](https://github.com/astronomer/astro-sdk)
-- data quality checks with [Great Expectations](https://greatexpectations.io/)
-- transformations and tests in [DBT](https://www.getdbt.com/), 
 - audio file transcription with [OpenAI Whisper](https://github.com/openai/whisper)
-- natural language embeddings with [OpenAI Embeddings](https://platform.openai.com/docs/guides/embeddings)
-- vector search and named-entity recognition with [Weaviate](https://weaviate.io/)
-- sentiment classification with [Keras](https://keras.io/)  
+- natural language embeddings with [OpenAI Embeddings](https://platform.openai.com/docs/guides/embeddings) and the [Weaviate provider for Airflow](https://github.com/astronomer/airflow-provider-weaviate)
+- vector search with [Weaviate](https://weaviate.io/)
+- sentiment classification with [LightGBM](https://lightgbm.readthedocs.io/en/latest/pythonapi/lightgbm.LGBMClassifier.html)  
 - ML model management with [Snowflake ML](https://docs.snowflake.com/LIMITEDACCESS/snowflake-ml-modeling)
   
 All of the above are presented in a [Streamlit](http://www.streamlit.io) applicaiton.  
@@ -60,7 +59,6 @@ export AIRFLOW_CONN_SNOWFLAKE_DEFAULT='{"conn_type": "snowflake", "login": "<USE
 
 4.  The Astro CLI uses Docker Compose to create local development resources in addition to the Airflow services.  To show this, uncomment the `minio`, `streamlit` and `weaviate` sections of the `docker-compose.override.yml` file to enable these services:
 
-- [minio](https://min.io/): Object storage which is used for ingest staging as well as stateful backups for other services.  As an alternative to S3 or GCS this service is controlled by the user and provides a local option for simpler development.
 - [weaviate](https://weaviate.io/): A vector database 
 - [streamlit](http://www.streamlit.io): A web application framework for building data-centric apps.
 
@@ -115,5 +113,4 @@ Follow the status of the DAG run in the [Airflow UI](http://localhost:8080/dags/
 
 Other service UIs are available at the the following:
 - Airflow: [http://localhost:8080](http://localhost:8080) Username:Password is admin:admin
-- Minio: [http://localhost:9000](http://localhost:9000) Username:Password is minioadmin:minioadmin
 - Weaviate: [https://console.weaviate.io/](https://link.weaviate.io/3UD9H8z) Enter localhost:8081 in the "Self-hosted Weaviate" field.
