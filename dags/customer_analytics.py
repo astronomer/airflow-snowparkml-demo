@@ -4,7 +4,7 @@
 This DAG demonstrates an end-to-end application workflow using OpenAI embeddings with a
 Weaviate vector database as well as Snowpark decorators, the Snowflake XCOM backend and 
 the Snowpark ML model registry.  The Astro CLI can easily be adapted to include additional 
-Docker-based services.  This demo includes services for Minio, Weaviate and streamlit.
+Docker-based services.  This demo includes services for Weaviate and streamlit.
 
 The Snowpark provider is in a dev status and not yet in the pypi registry. 
 Instead the provider is available via a wheel file in the linked 
@@ -15,8 +15,6 @@ See [README_CA.md](https://github.com/astronomer/airflow-snowparkml-demo/blob/ma
 
 from datetime import datetime 
 import os
-from pathlib import Path
-import json
 import pandas as pd
 import numpy as np
 
@@ -25,32 +23,27 @@ from astro.files import File
 from astro.sql.table import Table 
 from airflow.decorators import dag, task, task_group
 from weaviate.util import generate_uuid5
-# from cosmos.task_group import DbtTaskGroup
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
-from weaviate_provider.operators.weaviate import WeaviateRestoreOperator, WeaviateRetrieveAllOperator
-# from great_expectations_provider.operators.great_expectations import GreatExpectationsOperator
-
-_SNOWFLAKE_CONN_ID = 'snowflake_default'
-_WEAVIATE_CONN_ID = 'weaviate_default'
+from weaviate_provider.operators.weaviate import WeaviateRestoreOperator
 
 demo_database = os.environ['DEMO_DATABASE']
 demo_schema = os.environ['DEMO_SCHEMA']
 
+_SNOWFLAKE_CONN_ID = "snowflake_default"
+
 restore_data_uri = 'https://astronomer-demos-public-readonly.s3.us-west-2.amazonaws.com/sissy-g-toys-demo/data'
 calls_directory_stage = 'call_stage'
-# weaviate_backup_bucket = 'weaviate-backup'
 data_sources = ['ad_spend', 'sessions', 'customers', 'payments', 'subscription_periods', 'customer_conversions', 'orders']
 twitter_sources = ['twitter_comments', 'comment_training']
 weaviate_class_objects = {'CommentTraining': {'count': 1987}, 'CustomerComment': {'count': 12638}, 'CustomerCall': {'count': 43}}
-# minio_conn = json.loads(os.environ['AIRFLOW_CONN_MINIO_DEFAULT'])
-# weaviate_conn = json.loads(os.environ['AIRFLOW_CONN_WEAVIATE_DEFAULT'])
-
-# _DBT_BIN = '/home/astro/.venv/dbt/bin/dbt'
 
 default_args={
     "temp_data_output": 'table',
     "temp_data_schema": demo_schema,
-    "temp_data_overwrite": True
+    "temp_data_overwrite": True,
+    "snowflake_conn_id": _SNOWFLAKE_CONN_ID,
+    "weaviate_conn_id": "weaviate_default",
+
 }
 
 @dag(schedule=None, start_date=datetime(2023, 1, 1), catchup=False, default_args=default_args)
@@ -74,7 +67,6 @@ def customer_analytics():
             Because it relies on local storage this DAG will not function in
             hosted airflow.
             """
-
             import urllib
             import zipfile
 
@@ -84,7 +76,7 @@ def customer_analytics():
             with zipfile.ZipFile(zip_path, "r") as f:
                 f.extractall('/usr/local/airflow/include/weaviate/data/backups')
 
-        @task.snowpark_python(snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        @task.snowpark_python()
         def check_model_registry(demo_database:str, demo_schema:str) -> dict: 
             from snowflake.ml.registry import model_registry
 
@@ -98,7 +90,6 @@ def customer_analytics():
         
         _restore_weaviate = WeaviateRestoreOperator(task_id='restore_weaviate',
                                                     backend='filesystem', 
-                                                    weaviate_conn_id=_WEAVIATE_CONN_ID,
                                                     id='backup',
                                                     include=list(weaviate_class_objects.keys()),
                                                     replace_existing=True)
@@ -154,8 +145,8 @@ def customer_analytics():
             @task.snowpark_python()
             def mrr_playbook(subscription_df:SnowparkTable):
                 from snowflake.snowpark import Window
-
                 from datetime import date
+
                 day_count = date.today() - date(2018,1,1)
                 months = snowpark_session.generator(F.seq4(), rowcount=day_count.days)\
                                          .with_column('date_month', F.date_trunc('month', 
@@ -282,7 +273,7 @@ def customer_analytics():
         @task_group()
         def load_unstructured_data():
             
-            @task.snowpark_python(snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+            @task.snowpark_python()
             def load_support_calls_to_stage(restore_data_uri:str, calls_directory_stage:str) -> str:
                 import zipfile
                 import io
@@ -317,21 +308,19 @@ def customer_analytics():
                                                input_file = File(f'{restore_data_uri}/twitter_comments.parquet'),
                                                output_table = Table(name='STG_TWITTER_COMMENTS', 
                                                                     conn_id=_SNOWFLAKE_CONN_ID),
-                                               use_native_support=False,
-            )
+                                               use_native_support=False)
 
             _stg_training_table = aql.load_file(task_id='load_comment_training',
                                                 input_file = File(f'{restore_data_uri}/comment_training.parquet'), 
                                                 output_table = Table(name='STG_COMMENT_TRAINING', 
                                                                      conn_id=_SNOWFLAKE_CONN_ID),
-                                                use_native_support=False,
-            )
+                                                use_native_support=False)
 
             return _calls_directory_stage, _stg_comment_table, _stg_training_table
         
         _calls_directory_stage, _stg_comment_table, _stg_training_table = load_unstructured_data()
         
-        @task.snowpark_virtualenv(requirements=['numpy','torch==2.0.0','tqdm','more-itertools==9.1.0','transformers==4.27.4','ffmpeg-python==0.2.0','openai-whisper==v20230314'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        @task.snowpark_virtualenv(requirements=['numpy','torch==2.0.0','tqdm','more-itertools==9.1.0','transformers==4.27.4','ffmpeg-python==0.2.0','openai-whisper==v20230314'])
         def transcribe_calls(calls_directory_stage:str):
             import requests
             import tempfile
@@ -465,7 +454,7 @@ def customer_analytics():
 
         return _training_table, _comment_table, _calls_table
     
-    @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'scikit-learn==1.2.2', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+    @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'scikit-learn==1.2.2', 'astro_provider_snowflake'])
     def train_sentiment_classifier(class_name:str, snowpark_model_registry:dict):
         from snowflake.ml.registry import model_registry
         import numpy as np
@@ -508,7 +497,7 @@ def customer_analytics():
     @task_group()
     def score_sentiment():
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'])
         def call_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
             from snowflake.ml.registry import model_registry
             import numpy as np
@@ -531,7 +520,7 @@ def customer_analytics():
 
             return snowpark_session.create_dataframe(df.rename(columns=str.upper))
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'])
         def twitter_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
             from snowflake.ml.registry import model_registry
             import numpy as np
@@ -566,7 +555,7 @@ def customer_analytics():
     @task_group()
     def exit():
 
-        @task.snowpark_python(snowflake_conn_id=_SNOWFLAKE_CONN_ID)
+        @task.snowpark_python()
         def create_presentation_tables(attribution_df:SnowparkTable, 
                                        mrr_df:SnowparkTable, 
                                        customers_df:SnowparkTable,
@@ -643,6 +632,7 @@ def customer_analytics():
             
             pred_calls_table.write.save_as_table('PRED_CUSTOMER_CALLS', mode='overwrite')
             pred_comment_table.write.save_as_table('PRED_TWITTER_COMMENTS', mode='overwrite')
+            attribution_df.write.save_as_table('ATTRIBUTION_TOUCHES', mode='overwrite')
 
             return 'success'
         
