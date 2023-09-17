@@ -43,64 +43,30 @@ git clone https://github.com/astronomer/airflow-snowparkml-demo
 cd airflow-snowparkml-demo 
 ```
 
-3.  Setup shell environment variables for the demo.  Update values in brackets `<>` and run the commands in the terminal where you will be running the demo.
-
-- Export database and schema to be used for this demo.  If these objects do not yet exist they can be created in a later step.
-```bash
-export DEMO_DATABASE='<DB_NAME>'
-export DEMO_SCHEMA='<SCHEMA_NAME>'
-export OPENAI_APIKEY='<OPENAI_APIKEY>'
-```
-
--Export Snowflake account credentials as environment variables.
-```bash
-export AIRFLOW_CONN_SNOWFLAKE_DEFAULT='{"conn_type": "snowflake", "login": "<USER_NAME>", "password": "<PASSWORD>", "schema": "${DEMO_SCHEMA}", "extra": {"account": "<ORG_NAME>-<ACCOUNT_NAME>", "warehouse": "<WAREHOUSE_NAME>", "database": "${DEMO_DATABASE}", "region": "<REGION_NAME>", "role": "<USER_ROLE>", "authenticator": "snowflake", "session_parameters": null, "application": "AIRFLOW"}}'
-```
-
-4.  The Astro CLI uses Docker Compose to create local development resources in addition to the Airflow services.  To show this, uncomment the `minio`, `streamlit` and `weaviate` sections of the `docker-compose.override.yml` file to enable these services:
-
-- [weaviate](https://weaviate.io/): A vector database 
-- [streamlit](http://www.streamlit.io): A web application framework for building data-centric apps.
-
-
-
+3. Open the `.env` file in an editor and update the following variables with you account information
+This demo assumes the use of a new Snowflake trial account with admin privileges.  A database named 'DEMO' and schema named 'DEMO' will be created in the DAG.  Running this demo without admin privileges or with existing database/schema will require further updates to the `.env` file.
+  
+- AIRFLOW_CONN_SNOWFLAKE_DEFAULT  
+  -- login  
+  -- password  
+  -- account **  
+- OPENAI_APIKEY  
+  
+** The Snowflake `account` field of the connection should use the new `ORG_NAME-ACCOUNT_NAME` format as per [Snowflake Account Identifier policies](https://docs.snowflake.com/en/user-guide/admin-account-identifier).  The ORG and ACCOUNT names can be found in the confirmation email or in the Snowflake login link (ie. `https://xxxxxxx-yyy11111.snowflakecomputing.com/console/login`)
+Do not specify a `region` when using this format for accounts.
+  
+NOTE: Database and Schema names should be CAPITALIZED due to a bug in Snowpark ML.
+  
 4.  Start Apache Airflow:
     ```sh
     astro dev restart
     ```  
-5. Setup Snowflake objects for the demo.  
-  
-If using an existing database and schema in Snowflake skip to step 6.  Otherwise run the following script to create a database, schema and tables needed for the demo.
-  
-Note, this must be run as a user with admin priveleges.  Alternatively use an existing database and schema or look at the setup scripts and have a Snowflake administrator create these objects and grant permissions.
-  
-```bash
-astro dev bash -s
-```
+  A browser window should open to [http://localhost:8080](http://localhost:8080) 
+  Login with 
+    username: `admin` 
+    password: `admin`  
 
-```bash
-python include/utils/setup_snowflake.py \
-  --conn_id 'snowflake_default' \
-  --admin_role 'sysadmin' \
-  --database $DEMO_DATABASE \
-  --schema $DEMO_SCHEMA
-  exit
-```  
-  
-6. Setup the table and stage to be used as the Snowflake XCOM backend.
-```bash
-astro dev bash -s
-```
-  
-```bash
-python include/utils/snowflake_xcom_backend.py \
-  --conn_id 'snowflake_default' \
-  --database $DEMO_DATABASE \
-  --schema $DEMO_SCHEMA
-exit
-```
-
-7. Run the Snowpark ML Demo DAG
+7. Run the Customer Analytics Demo DAG
 ```bash
 astro dev run dags unpause customer_analytics
 astro dev run dags trigger customer_analytics

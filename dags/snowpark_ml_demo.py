@@ -17,8 +17,8 @@ from astro.sql.table import Table
 import os
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
 
-demo_database = os.environ['DEMO_DATABASE']
-demo_schema = os.environ['DEMO_SCHEMA']
+demo_database = 'DEMO'
+demo_schema = 'DEMO'
 
 @dag(default_args={
          "temp_data_output": "table",

@@ -1,1 +1,4 @@
-/tmp/astro_provider_snowflake-0.0.0-py3-none-any.whl[snowpark]
+psycopg2-binary
+snowflake_snowpark_python[pandas]>=1.5.1
+/tmp/astro_provider_snowflake-0.0.0-py3-none-any.whl
+virtualenv

@@ -13,21 +13,22 @@ repository.
 See [README_CA.md](https://github.com/astronomer/airflow-snowparkml-demo/blob/main/README_CA.md) for setup instructions.
 """
 
-from datetime import datetime 
+import datetime 
 import os
 import pandas as pd
 import numpy as np
+from textwrap import dedent
 
 from astro import sql as aql 
 from astro.files import File 
-from astro.sql.table import Table 
-from airflow.decorators import dag, task, task_group
+from astro.sql.table import Table, Metadata
+from airflow.decorators import dag, task, task_group, setup, teardown
 from weaviate.util import generate_uuid5
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
 from weaviate_provider.operators.weaviate import WeaviateRestoreOperator
 
-demo_database = os.environ['DEMO_DATABASE']
-demo_schema = os.environ['DEMO_SCHEMA']
+demo_database = 'DEMO'
+demo_schema = 'DEMO'
 
 _SNOWFLAKE_CONN_ID = "snowflake_default"
 
@@ -41,31 +42,100 @@ default_args={
     "temp_data_output": 'table',
     "temp_data_schema": demo_schema,
     "temp_data_overwrite": True,
+    "temp_data_table_prefix": "XCOM_",
     "snowflake_conn_id": _SNOWFLAKE_CONN_ID,
     "weaviate_conn_id": "weaviate_default",
 
 }
 
-@dag(schedule=None, start_date=datetime(2023, 1, 1), catchup=False, default_args=default_args)
+@dag(schedule=None, start_date=datetime.datetime(2023, 1, 1), catchup=False, default_args=default_args)
 def customer_analytics():
-    
+    """
+    ### Use the Snowpark Provider in an advanced Machine Learning workflow
+
+    This DAG demonstrates an end-to-end application workflow using OpenAI embeddings with a
+    Weaviate vector database as well as Snowpark decorators, the Snowflake XCOM backend and 
+    the Snowpark ML model registry.  The Astro CLI can easily be adapted to include additional 
+    Docker-based services.  This demo includes services for Weaviate and streamlit.
+
+    The Snowpark provider is in a dev status and not yet in the pypi registry. 
+    Instead the provider is available via a wheel file in the linked 
+    repository.
+
+    See [README_CA.md](https://github.com/astronomer/airflow-snowparkml-demo/blob/main/README_CA.md) for setup instructions.
+    """
+    @task.snowpark_python()
+    def create_snowflake_objects(demo_database:str, demo_schema:str, calls_directory_stage:str):
+        """
+        The Astronomer provider for Snowpark adds a `snowpark_python` task decorator which executes 
+        the Snowpark Python code in the decorated callable function. The provider also includes a 
+        traditional operator `SnowparkPythonOperator` though this demo only shows the taskflow API.
+
+        The decorartor (and operator) automatically instantiates a `snowpark_session`.  Snowflake 
+        credentials are automatically and securely passed using the Airflow Connections so users do 
+        not need to pass Snowflake credentials as function arguments.  For this demo the 
+        `snowflake_conn_id` parameter is defined in the `default_args` above.
+        
+        [AIP-52](https://cwiki.apache.org/confluence/display/AIRFLOW/AIP-52+Setup+and+teardown+tasks) 
+        introduced the notion of [setup and teardown tasks](https://docs.astronomer.io/learn/airflow-setup-teardown)
+
+        Because we assume that the demo will be run with a brand new Snowflake trial 
+        account this task creates Snowflake objects (databases, schemas, stages, etc.) prior to 
+        running any tasks.
+        """
+
+        snowpark_session.sql(f"CREATE DATABASE IF NOT EXISTS {demo_database};").collect()
+
+        snowpark_session.sql(f"CREATE SCHEMA IF NOT EXISTS {demo_database}.{demo_schema};").collect()
+
+        snowpark_session.sql(f"""CREATE STAGE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_STAGE 
+                                    DIRECTORY = (ENABLE = TRUE)
+                                    ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+                             """).collect()
+        
+        snowpark_session.sql(f"""CREATE TABLE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_TABLE
+                                    ( 
+                                        dag_id varchar NOT NULL, 
+                                        task_id varchar NOT NULL, 
+                                        run_id varchar NOT NULL,
+                                        multi_index integer NOT NULL,
+                                        key varchar NOT NULL,
+                                        value_type varchar NOT NULL,
+                                        value varchar NOT NULL
+                                 ); 
+                              """).collect()
+        
+        snowpark_session.sql(f"""CREATE OR REPLACE STAGE {calls_directory_stage} 
+                                        DIRECTORY = (ENABLE = TRUE) 
+                                        ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
+                                """).collect()
+            
     @task_group()
     def enter():
-       
+        """
+        Using an `enter()` task group allows us to group together tasks that should be run to setup 
+        state for the rest of the DAG.  Functionally this is very similar to setup tasks but allows 
+        some additional flexibility in dependency mapping.
+        """
+
         @task()
         def download_weaviate_backup() -> str:
             """
-            In order to speed up the demo process the data has already been 
-            ingested into weaviate and vectorized.  Upstream tasks importing 
-            to weaviate will skip embeddings and only make calls to openai 
-            for data it hasn't yet embedded. 
-            
-            This task will download the backup.zip and make it available in 
-            a docker mounted filesystem for the weaviate restore task.  
-            Normally this would be in an cloud storage.
+            [Weaviate](http://www.weaviate.io) is a vector database which allows us to store a 
+            vectorized representation of unstructured data like twitter tweets or audio calls.
+            In this demo we use the [OpenAI  embeddings](https://platform.openai.com/docs/guides/embeddings/embeddings) 
+            model to build the vectors.  With the vectors we can do sentiment classification 
+            based on cosine similarity with a labeled dataset.  
 
-            Because it relies on local storage this DAG will not function in
-            hosted airflow.
+            This demo uses a version of Weaviate running locally in a Docker container.  See the 
+            `docker-compose.override.yml` file for details. The Astro CLI will start this container 
+            alongside the Airflow webserver, trigger, scheduler and database.
+
+            In order to speed up the demo process the data has already been ingested into weaviate 
+            and vectorized.  The data was then backed up and stored in the cloud for easy restore.            
+            
+            This task will download the backup.zip and make it available in a docker mounted 
+            filesystem for the weaviate restore task.  Normally this would be in an cloud storage.
             """
             import urllib
             import zipfile
@@ -77,7 +147,15 @@ def customer_analytics():
                 f.extractall('/usr/local/airflow/include/weaviate/data/backups')
 
         @task.snowpark_python()
-        def check_model_registry(demo_database:str, demo_schema:str) -> dict: 
+        def check_model_registry(demo_database:str, demo_schema:str) -> dict:
+            """
+            Snowpark ML provides a model registry leveraging tables, views and stages to 
+            track model state as well as model artefacts. 
+
+            If the model registry objects have not yet been created in Snowflake this task 
+            will create them and return a dictionary with the database and schema where they 
+            exist.
+            """
             from snowflake.ml.registry import model_registry
 
             assert model_registry.create_model_registry(session=snowpark_session, 
@@ -93,6 +171,21 @@ def customer_analytics():
                                                     id='backup',
                                                     include=list(weaviate_class_objects.keys()),
                                                     replace_existing=True)
+        
+        _restore_weaviate.doc_md = dedent(
+            """
+            ### Restoring Demo Data  
+            In order to speed up the demo process the data has already been ingested into weaviate 
+            and vectorized.  The data was then backed up and stored in the cloud for easy restore.
+
+            This task restores the pre-vectorized demo data using the backup.zip file downloaded 
+            in the `download_weaviate_backup` task.  
+
+            Upstream tasks will try to import to weaviate will but will be `skipped` since they 
+            already exist.  For any new data Weaviate will use OpenAI embeddings to vectorize 
+            and import data.
+            """
+        )
 
         download_weaviate_backup() >> _restore_weaviate
 
@@ -100,21 +193,66 @@ def customer_analytics():
     
     @task_group()
     def structured_data():
+        """
+        This demo shows the ability to build with structured, semi-strcutured and unstructured data 
+        in Snowflake.  
+
+        This section extracts, transforms and load structured data from an S3 bucket.
+        """
 
         @task_group()
         def load_structured_data():
+            """
+            The [Astro Python SDK](https://docs.astronomer.io/learn/astro-python-sdk-etl)
+            is a good way to easily load data to a database with very few lines of code.
+
+            Here we use dynamically generated tasks in a task group.  A task will be created 
+            to load each file in the `data_sources` list.
+            """
             for source in data_sources:
                 aql.load_file(task_id=f'load_{source}',
                     input_file = File(f"{restore_data_uri}/{source}.csv"), 
                     output_table = Table(name=f'STG_{source.upper()}', 
                                          conn_id=_SNOWFLAKE_CONN_ID)
                 )
-            
+
         @task_group()
         def transform_structured():
 
             @task.snowpark_python()
             def jaffle_shop(customers_df:SnowparkTable, orders_df:SnowparkTable, payments_df:SnowparkTable):
+                """
+                Historically users must write SQL code for data transformations in Snowflake.  
+                For example, the SQL code in the `include/sql/jaffle_shop.sql` file can be 
+                [orchestrated as a task](https://docs.astronomer.io/learn/airflow-snowflake) 
+                in Airflow with something like the following:  
+  
+                _customers = SnowflakeOperator(task_id="jaffle_shop",
+                                               sql=Path('include/sql/jaffle_shop.sql).read_text(),
+                                               params={"table_name": CUSTOMERS})
+                
+                Alternatively, users can use the Snowpark Dataframe API for simplicity, 
+                readability and extensibility.
+
+                Best practices for pipeline orchestration dictate the need to build 'atomic' 
+                and 'idempotent' tasks.  However, Snowpark sessions and session-residenct objects, 
+                such as Snowpark DataFrames, are not serializable and cannot easily be passed between 
+                tasks. 
+                
+                The Astronomer provider for Snowpark includes a `SnowparkTable` dataclass which 
+                can be serialized and deserialized.
+
+                Any SnowparkTable objects passed as arguments are automatically instantiated as 
+                Snowpark dataframes.
+
+                Any Snowpark dataframe objects returned from the task are automatically serialized as tables 
+                based on the decorator parameters `temp_data_output`, `temp_data_schema`, `temp_data_overwrite`, 
+                and `temp_data_table_prefix`.  For this demo these parameters are set as `default_args` at the 
+                top of this file.  Alternatively, these can be set for each task or overriden per-task.
+
+                The Snowpark `Functions` and `Types have been automatically imported as `F` and 
+                `T` respectively.
+                """
                 
                 customer_orders_df = orders_df.group_by('customer_id').agg(F.min('order_date').alias('first_order'),
                                                                            F.max('order_date').alias('most_recent_order'),
@@ -142,8 +280,24 @@ def customer_analytics():
 
                 return customers
 
-            @task.snowpark_python()
+            @task.snowpark_virtualenv(python_version='3.8', requirements=['snowflake-snowpark-python>=1.8'])
             def mrr_playbook(subscription_df:SnowparkTable):
+                """
+                Snowpark Python currently supports Python 3.8, 3.9, and 3.10.  If the version of 
+                Python used to run Airflow is different it may be necessary to use a Python virtual 
+                environment for Snowpark tasks.  
+                  
+                The `snowpark_virtualenv` decorator and `SnowparkVirtualenvOperator` allow users 
+                to specify a different python version similar to the 
+                [PythonVirtualenvOperator](https://registry.astronomer.io/providers/apache-airflow/versions/latest/modules/pythonvirtualenvoperator).  
+                Python executables for the specified version must be installed on the executor.  
+                Additional packages can be installed in the virtual environment by specifying a
+                `requirements` parameter as a list of strings.
+                  
+                Astronomer has created a [Docker Buildkit](https://github.com/astronomer/astro-provider-venv) 
+                to simplify building virtual environments with Astro CLI.  See the `Dockerfile` for 
+                details.
+                """
                 from snowflake.snowpark import Window
                 from datetime import date
 
@@ -213,8 +367,21 @@ def customer_analytics():
 
                 return mrr
             
-            @task.snowpark_python()
+            @task.snowpark_ext_python(python='/home/astro/.venv/snowpark/bin/python')
             def attribution_playbook(customer_conversions_df:SnowparkTable, sessions_df:SnowparkTable):
+                """
+                Snowpark Python currently supports Python 3.8, 3.9, and 3.10.  If the version of 
+                Python used to run Airflow is different it may be necessary to use a Python virtual 
+                environment for Snowpark tasks.  
+                  
+                The `snowpark_ext_python` decorator and `SnowparkExternalPythonOperator` allow users 
+                to specify a different python executable similar to the 
+                [ExternalPythonOperator](https://registry.astronomer.io/providers/apache-airflow/versions/latest/modules/externalpythonoperator).  
+                  
+                Astronomer has created a [Docker Buildkit](https://github.com/astronomer/astro-provider-venv) 
+                to simplify building virtual environments with Astro CLI.  See the `Dockerfile` for 
+                details.
+                """
                 from snowflake.snowpark import Window
 
                 customer_window = Window.partition_by('customer_id')
@@ -280,11 +447,6 @@ def customer_analytics():
                 import tempfile
                 import requests
 
-                snowpark_session.sql(f"""CREATE OR REPLACE STAGE {calls_directory_stage} 
-                                         DIRECTORY = (ENABLE = TRUE) 
-                                         ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
-                                    """).collect()
-
                 with tempfile.TemporaryDirectory() as td:
                     calls_zipfile = requests.get(f'{restore_data_uri}/customer_calls.zip').content 
                     buffer = io.BytesIO(calls_zipfile)
@@ -320,7 +482,16 @@ def customer_analytics():
         
         _calls_directory_stage, _stg_comment_table, _stg_training_table = load_unstructured_data()
         
-        @task.snowpark_virtualenv(requirements=['numpy','torch==2.0.0','tqdm','more-itertools==9.1.0','transformers==4.27.4','ffmpeg-python==0.2.0','openai-whisper==v20230314'])
+        whisper_requirements = [
+            'numpy',
+            'torch==2.0.0',
+            'tqdm',
+            'more-itertools==9.1.0',
+            'transformers==4.27.4',
+            'ffmpeg-python==0.2.0',
+            'openai-whisper==v20230314']
+        
+        @task.snowpark_virtualenv(requirements=whisper_requirements)
         def transcribe_calls(calls_directory_stage:str):
             import requests
             import tempfile
@@ -357,6 +528,36 @@ def customer_analytics():
 
             @task.snowpark_python()
             def get_training_pandas(stg_training_table:SnowparkTable):
+                """
+                The `weaviate_import` decorator below takes a pandas dataframe for input. This 
+                task pulls the data from Snowflake tables and passes it to the import task as 
+                a pandas dataframe.
+
+                Normally Airflows cross-communication (XCOM) system is not designed for passing 
+                large or complex (ie. non-json-serializable) data between tasks as it relies on 
+                storing data in a database (usually postgres or mysql). Airflow 2.5+ has added 
+                support for [passing pandas dataframe](https://github.com/apache/airflow/pull/30390). 
+                However, if the data is very large or if passing other types of data this will fail. 
+                
+                Additionally, for data governance reasons it may be not be advisable to pass 
+                sensitive or regulated data between tasks to avoid storing this data in a the
+                XCOM database.
+                
+                For these reasons the Astronomer provider for Snowpark includes a [custom XCOM 
+                backend](https://docs.astronomer.io/learn/xcom-backend-tutorial) which saves 
+                XCOM data passed between tasks in either Snowflake tables or stages. 
+                small, JSON-serializable data is stored in a single table and large or 
+                non-serializable data is stored in a stage.  This allows passing arbitrarily 
+                large or complex data between tasks and ensures that all data, including 
+                intermediate datasets, stay inside the secure, goverened boundary of Snowflake.
+
+                The 'AIRFLOW__CORE__XCOM_SNOWFLAKE_TABLE', 'AIRFLOW__CORE__XCOM_SNOWFLAKE_STAGE', 
+                and 'AIRFLOW__CORE__XCOM_SNOWFLAKE_CONN_NAME' settings in the 
+                `docker-compose.override.yml` file specify where this data is stored.
+
+                This task returns a pandas dataframe for downstream import by passing it through 
+                the custom XCOM backend.
+                """
                 return stg_training_table.to_pandas()
             
             @task.snowpark_python()
@@ -370,6 +571,18 @@ def customer_analytics():
             @task.weaviate_import()
             def generate_training_embeddings(stg_training_table:pd.DataFrame):
                 """
+                Astronomer's [Weaviate provider for Airflow](https://registry.astronomer.io/providers/airflow-provider-weaviate/versions/latest) 
+                provides the `weaviate_import` decorator or `WeaviateImportDataOperator` to import 
+                data to Weaviate.  
+                
+                The decorator version includes a pre_execute phase which executes a decorated 
+                python callable function just before passing the data for import.
+
+                This task takes the pandas dataframe fetched previously by passing 
+                it through the custom XCOM backend for Snowflake, performs some simple 
+                transformations and must return a dictionary with all required parameters 
+                for the import operator.
+
                 Because we restored weaviate from pre-built embeddings this task should "skip" 
                 re-importing each row.
                 """
@@ -456,6 +669,18 @@ def customer_analytics():
     
     @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'scikit-learn==1.2.2', 'astro_provider_snowflake'])
     def train_sentiment_classifier(class_name:str, snowpark_model_registry:dict):
+        """
+        The Snowpark ML framework has many options for feature engineering and model training.  See the 
+        [Quickstart](https://quickstarts.snowflake.com/guide/getting_started_with_dataengineering_ml_using_snowpark_python/index.html#0
+        for details.  
+
+        In this demo we show how to use the Snowpark ML model registry with a bring-your-own model.
+
+        This task fetches embeddings for a labled dataset using the Weaviate hook from the 
+        Weaviate provider for Airflow.  Labled and embeddings are used to train a simple sentiment 
+        classifier.  No optimization or model evaluation steps are performed as they are outside 
+        the scope of the demo.
+        """
         from snowflake.ml.registry import model_registry
         import numpy as np
         import pandas as pd
@@ -497,8 +722,17 @@ def customer_analytics():
     @task_group()
     def score_sentiment():
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'])
-        def call_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], retries=2, retry_delay=datetime.timedelta(seconds=5))
+        def call_sentiment(class_name:str, snowpark_model_registry:dict, model:dict) -> SnowparkTable:
+            """
+            Airflow task retries are a good way to gracefully deal with race conditions or other 
+            transient errors in external/dependent systems.
+
+            At the time this demo was built there is a race condition or concurrency issue with 
+            the `load_model()` function in the Snowpark ML model registry.  Task failures may 
+            occur with either of the two scoring tasks and by setting `retries=2` we can simply 
+            rerun the task 5 seconds later and the DAG will complete.
+            """
             from snowflake.ml.registry import model_registry
             import numpy as np
             import pandas as pd
@@ -520,8 +754,18 @@ def customer_analytics():
 
             return snowpark_session.create_dataframe(df.rename(columns=str.upper))
 
-        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'])
-        def twitter_sentiment(class_name:str, snowpark_model_registry:dict, model:dict):
+        @task.snowpark_virtualenv(requirements=['lightgbm==3.3.5', 'astro_provider_snowflake'], retries=2, retry_delay=datetime.timedelta(seconds=5))
+        def twitter_sentiment(class_name:str, snowpark_model_registry:dict, model:dict) -> SnowparkTable:
+            """
+            Airflow task retries are a good way to gracefully deal with race conditions or other 
+            transient errors in external/dependent systems.
+
+            At the time this demo was built there is a race condition or concurrency issue with 
+            the `load_model()` function in the Snowpark ML model registry.  Task failures may 
+            occur with either of the two scoring tasks and by setting `retries=2` we can simply 
+            rerun the task 5 seconds later and the DAG will complete.
+            """
+
             from snowflake.ml.registry import model_registry
             import numpy as np
             import pandas as pd
@@ -554,6 +798,10 @@ def customer_analytics():
 
     @task_group()
     def exit():
+        """
+        The exit() task group is a good place to perform any tasks which consolidate or cleanup
+        from other tasks in the DAG.
+        """
 
         @task.snowpark_python()
         def create_presentation_tables(attribution_df:SnowparkTable, 
@@ -561,10 +809,14 @@ def customer_analytics():
                                        customers_df:SnowparkTable,
                                        pred_calls_table:SnowparkTable, 
                                        pred_comment_table:SnowparkTable):
+            """
+            This task consolidates all of the structured and unstructured data results to create
+            tables for the presentation layer running in the Streamlit app.
             
-            # attribution_df = snowpark_session.table('ATTRIBUTION_TOUCHES')
-            # mrr_df = snowpark_session.table('MRR').drop(['ID'])
-            # customers_df = snowpark_session.table('CUSTOMERS')\
+            Because the app needs to know the name for tables we write them specifically here 
+            with `save_as_table` rather than passing through xcom or using the Snowpark return 
+            processing.
+            """
             customers_df = customers_df.with_column('CLV', 
                                                     F.round(F.col('CUSTOMER_LIFETIME_VALUE'), 2))
 
@@ -633,8 +885,6 @@ def customer_analytics():
             pred_calls_table.write.save_as_table('PRED_CUSTOMER_CALLS', mode='overwrite')
             pred_comment_table.write.save_as_table('PRED_TWITTER_COMMENTS', mode='overwrite')
             attribution_df.write.save_as_table('ATTRIBUTION_TOUCHES', mode='overwrite')
-
-            return 'success'
         
         create_presentation_tables(attribution_df=_attribution_touches, 
                                    mrr_df=_mrr, 
@@ -642,20 +892,68 @@ def customer_analytics():
                                    pred_calls_table=_pred_calls_table, 
                                    pred_comment_table=_pred_comment_table)
         
-    _snowpark_model_registry, _restore_weaviate = enter()
+    @task.snowpark_python()
+    def cleanup_temp_tables(demo_database:str, demo_schema:str, **context):
+        """
+        This task will be run as an Airflow 2.7 teardown task.  The task deletes 
+        the intermediate, temporary data passed between Snowpark tasks. In production 
+        it may be best to keep intermediate tables as they provide useful 
+        audting data.  For dev/test it may be beneficial to reduce objects and noise.
 
-    _attribution_touches, _mrr, _customers = structured_data()
-    
-    _training_table, _comment_table, _calls_table = unstructured_data()
+        The `temp_data_dict` is instantiated by default in the task namespace based
+        on the decorator args or `default_args`.  Likewise, all of the variables 
+        needed to construct the temporary data URI (e.g. `dag_id`, `ts_nodash`, etc.)
+        are also instantiated.  This allows us to cleanup temporary data after the 
+        DAG run.  
 
-    _model = train_sentiment_classifier(class_name='CommentTraining',
-                                        snowpark_model_registry=_snowpark_model_registry)
+        In the future this may be added as another operator for the Snowpark provider.  
+        Here it shows a good use of teardown tasks.
+        """
+        
+        snowpark_session.database = temp_data_dict['temp_data_db'] or demo_database
+        snowpark_session.schema = temp_data_dict['temp_data_schema'] or demo_schema
+
+        if temp_data_dict['temp_data_output'] == 'table':
+            xcom_table_string=f"{temp_data_dict['temp_data_table_prefix']}{dag_id}__%__{ts_nodash}__%".upper()
+
+            xcom_table_list = snowpark_session.table('information_schema.tables')\
+                                        .select('table_name')\
+                                        .where(F.col('table_name').like(xcom_table_string))\
+                                        .to_pandas()['TABLE_NAME'].to_list()
+
+            print(f'Removing tables {xcom_table_list}')
+
+            for table in xcom_table_list:
+                    try:
+                        snowpark_session.table(table).drop_table()
+                    except:
+                        pass
+        elif temp_data_dict['temp_data_output'] == 'stage':
+            
+            xcom_stage_string = f"{dag_id.lower()}/.*/{run_id.split('+')[0]}.*/"
+
+            print(f'Removing files based on {xcom_stage_string}')
+            
+            xcom_file_list = snowpark_session.sql(f"""REMOVE @{temp_data_dict['temp_data_stage']} 
+                                                      PATTERN='{xcom_stage_string}'""").collect()
     
-    _pred_calls_table, _pred_comment_table = score_sentiment()
-    
-    _exit = exit()
-    
-    _restore_weaviate >> _training_table >> _model
+    _create_snowflake_objects = create_snowflake_objects(demo_database, demo_schema, calls_directory_stage).as_setup() 
+
+    with cleanup_temp_tables(demo_database, demo_schema).as_teardown(setups=_create_snowflake_objects):
+        _snowpark_model_registry, _restore_weaviate = enter()
+
+        _attribution_touches, _mrr, _customers = structured_data()
+        
+        _training_table, _comment_table, _calls_table = unstructured_data()
+
+        _model = train_sentiment_classifier(class_name='CommentTraining',
+                                            snowpark_model_registry=_snowpark_model_registry)
+        
+        _pred_calls_table, _pred_comment_table = score_sentiment()
+        
+        _exit = exit()
+        
+        _restore_weaviate >> [_training_table, _comment_table, _calls_table] >> _model
 
 customer_analytics()
 
