@@ -6,6 +6,8 @@ services:
   #   environment:
   #     AIRFLOW_CONN_WEAVIATE_DEFAULT: '{"conn_type": "weaviate", "host": "http://weaviate:8081", "extra": {"X-OpenAI-Api-Key": "${OPENAI_APIKEY}"}}'
   scheduler:
+    ports:
+    - 8501:8501
     networks:
       - airflow
     environment:
