@@ -17,19 +17,28 @@ from astro.sql.table import Table
 import os
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
 
-demo_database = 'DEMO'
-demo_schema = 'DEMO'
+# This demo assumes the use of newly created objects in a Snowflake Trial.  
+# If using an existing snowflake account update the following.  If changing 
+# the demo_xcom_stage or demo_xcom_table update the environment variables in 
+# the docker-compose.override.yml file.
+snowflake_objects = {'demo_database': 'DEMO',
+                     'demo_schema': 'DEMO',
+                     'demo_warehouse': 'COMPUTE_WH',
+                     'demo_xcom_stage': 'XCOM_STAGE',
+                     'demo_xcom_table': 'XCOM_TABLE',
+                     'demo_snowpark_wh': 'SNOWPARK_WH'
+}
 
 _SNOWFLAKE_CONN_ID = "snowflake_default"
 
 @dag(default_args={
          "snowflake_conn_id": _SNOWFLAKE_CONN_ID,
          "temp_data_output": "table",
-         "temp_data_db": demo_database,
-         "temp_data_schema": demo_schema,
+         "temp_data_db": snowflake_objects['demo_database'],
+         "temp_data_schema": snowflake_objects['demo_schema'],
          "temp_data_overwrite": True,
-         "database": demo_database,
-         "schema": demo_schema
+         "database": snowflake_objects['demo_database'],
+         "schema": snowflake_objects['demo_schema']
          },
      schedule_interval=None, 
      start_date=datetime(2023, 4, 1))
@@ -45,10 +54,12 @@ def snowpark_ml_demo():
     """
 
     ingest_files=['yellow_tripdata_sample_2019_01.csv', 'yellow_tripdata_sample_2019_02.csv']
-    raw_table = Table(name='TAXI_RAW', metadata={'database':demo_database, 'schema':demo_schema}, conn_id=_SNOWFLAKE_CONN_ID)
+    raw_table = Table(name='TAXI_RAW', metadata={'database':snowflake_objects['demo_database'], 
+                                                 'schema':snowflake_objects['demo_schema']}, 
+                                                 conn_id=_SNOWFLAKE_CONN_ID)
 
     @task.snowpark_python()
-    def create_snowflake_objects(demo_database:str, demo_schema:str):
+    def create_snowflake_objects(snowflake_objects:dict):
         """
         The Astronomer provider for Snowpark adds a `snowpark_python` task decorator which executes 
         the Snowpark Python code in the decorated callable function. The provider also includes a 
@@ -68,20 +79,30 @@ def snowpark_ml_demo():
         running any tasks.
         """
 
-        snowpark_session.sql(f"""CREATE OR REPLACE WAREHOUSE snowpark_opt_wh WITH
+        snowpark_session.sql(f"""CREATE WAREHOUSE IF NOT EXISTS \
+                                {snowflake_objects['demo_snowpark_wh']} WITH
                                  WAREHOUSE_SIZE = 'MEDIUM'
                                  WAREHOUSE_TYPE = 'SNOWPARK-OPTIMIZED';""").collect()
         
-        snowpark_session.sql(f"CREATE DATABASE IF NOT EXISTS {demo_database};").collect()
+        snowpark_session.sql(f"""CREATE DATABASE IF NOT EXISTS \
+                                {snowflake_objects['demo_database']};""").collect()
 
-        snowpark_session.sql(f"CREATE SCHEMA IF NOT EXISTS {demo_database}.{demo_schema};").collect()
+        snowpark_session.sql(f"""CREATE SCHEMA IF NOT EXISTS \
+                                {snowflake_objects['demo_database']}.\
+                                {snowflake_objects['demo_schema']};""").collect()
 
-        snowpark_session.sql(f"""CREATE STAGE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_STAGE 
+        snowpark_session.sql(f"""CREATE STAGE IF NOT EXISTS \
+                                {snowflake_objects['demo_database']}.\
+                                {snowflake_objects['demo_schema']}.\
+                                {snowflake_objects['demo_xcom_stage']} 
                                     DIRECTORY = (ENABLE = TRUE)
                                     ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
                              """).collect()
         
-        snowpark_session.sql(f"""CREATE TABLE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_TABLE
+        snowpark_session.sql(f"""CREATE TABLE IF NOT EXISTS \
+                             {snowflake_objects['demo_database']}.\
+                            {snowflake_objects['demo_schema']}.\
+                            {snowflake_objects['demo_xcom_table']}
                                     ( 
                                         dag_id varchar NOT NULL, 
                                         task_id varchar NOT NULL, 
@@ -94,7 +115,7 @@ def snowpark_ml_demo():
                               """).collect()
     
     @task.snowpark_virtualenv(python_version='3.8', requirements=['snowflake-ml-python==1.0.9'])
-    def check_model_registry(demo_database:str, demo_schema:str) -> dict: 
+    def check_model_registry(snowflake_objects:dict) -> dict: 
         """
         Snowpark ML provides a model registry leveraging tables, views and stages to 
         track model state as well as model artefacts. 
@@ -119,10 +140,11 @@ def snowpark_ml_demo():
         from snowflake.ml.registry import model_registry
 
         assert model_registry.create_model_registry(session=snowpark_session, 
-                                                    database_name=demo_database, 
-                                                    schema_name=demo_schema)
+                                                    database_name=snowflake_objects['demo_database'], 
+                                                    schema_name=snowflake_objects['demo_schema'])
         
-        snowpark_model_registry = {'database': demo_database, 'schema': demo_schema}
+        snowpark_model_registry = {'database': snowflake_objects['demo_database'], 
+                                   'schema': snowflake_objects['demo_schema']}
 
         return snowpark_model_registry
 
@@ -244,7 +266,7 @@ def snowpark_ml_demo():
         return (featuredf, pickle.dumps(feature_pipeline))
 
     @task.snowpark_python()
-    def train(feature_pipeline:tuple, snowpark_model_registry:dict) -> dict:
+    def train(feature_pipeline:tuple, snowpark_model_registry:dict, snowflake_objects:dict) -> dict:
         """
         The Snowpark ML framework has many options for feature engineering and model training.  See the 
         [Quickstart](https://quickstarts.snowflake.com/guide/getting_started_with_dataengineering_ml_using_snowpark_python/index.html#0
@@ -285,7 +307,7 @@ def snowpark_ml_demo():
         model = LinearRegression(label_cols=["TRIP_DURATION_SEC"],
                                  output_cols=["TRIP_DURATION_SEC_PRED"])
 
-        snowpark_session.use_warehouse('snowpark_opt_wh')
+        snowpark_session.use_warehouse(snowflake_objects['demo_snowpark_wh'])
         
         model = model.fit(traindf)
 
@@ -293,6 +315,14 @@ def snowpark_ml_demo():
                                       model_version=model_version,
                                       model_name=model_name, 
                                       tags={'stage': 'dev', 'model_type': 'LinearRegression'})
+        
+        snowpark_session.use_warehouse(snowflake_objects['demo_warehouse'])
+        try:
+            snowpark_session.sql(f"""ALTER WAREHOUSE \
+                                    {snowflake_objects['demo_snowpark_wh']} \
+                                    SUSPEND;""").collect()
+        except: 
+            pass
 
         train_score = model.score(traindf)
         print(f'Training dataset r-squared value is {train_score}')
@@ -335,7 +365,7 @@ def snowpark_ml_demo():
         return pred_table_name
     
     @task.snowpark_ext_python(python='/home/astro/.venv/snowpark/bin/python')
-    def cleanup_temp_tables(demo_database:str, demo_schema:str, **context):
+    def cleanup_temp_tables(snowflake_objects:dict, **context):
         """
         This task will be run as an Airflow 2.7 teardown task.  The task deletes 
         the intermediate, temporary data passed between Snowpark tasks. In production 
@@ -350,17 +380,12 @@ def snowpark_ml_demo():
 
         In the future this may be added as another operator for the Snowpark provider.  
         Here it shows a good use of teardown tasks.
-
-        Similar to the `snowpark_virtualenv` decorator, the `snowpark_ext_python` decorator (and 
-        `SnowparkExternalPythonOperator`) allows users to specify a different python version (like 
-        [ExternalPythonOperator]
-        (https://registry.astronomer.io/providers/apache-airflow/versions/latest/modules/externalpythonoperator).  
-
-        Python executables for the specified version must be installed on the executor.  
         """
         
-        snowpark_session.database = temp_data_dict['temp_data_db'] or demo_database
-        snowpark_session.schema = temp_data_dict['temp_data_schema'] or demo_schema
+        snowpark_session.database = temp_data_dict['temp_data_db'] \
+                                        or snowflake_objects['demo_database']
+        snowpark_session.schema = temp_data_dict['temp_data_schema'] \
+                                        or snowflake_objects['demo_schema']
 
         if temp_data_dict['temp_data_output'] == 'table':
             xcom_table_string=f"{temp_data_dict['temp_data_table_prefix']}{dag_id}__%__{ts_nodash}__%".upper()
@@ -385,14 +410,15 @@ def snowpark_ml_demo():
             
             xcom_file_list = snowpark_session.sql(f"""REMOVE @{temp_data_dict['temp_data_stage']} 
                                                       PATTERN='{xcom_stage_string}'""").collect()
+   
             
     #To use the setup and teardown tasks we instantiate the setup task
-    _create_snowflake_objects = create_snowflake_objects(demo_database, demo_schema).as_setup() 
+    _create_snowflake_objects = create_snowflake_objects(snowflake_objects).as_setup() 
 
     #Then wrap the rest of the tasks in a with statement specifying the teardown and setup tasks
-    with cleanup_temp_tables(demo_database, demo_schema).as_teardown(setups=_create_snowflake_objects):
+    with cleanup_temp_tables(snowflake_objects).as_teardown(setups=_create_snowflake_objects):
     
-        _snowpark_model_registry = check_model_registry(demo_database, demo_schema)
+        _snowpark_model_registry = check_model_registry(snowflake_objects)
 
         _rawdf = load() 
 
@@ -400,7 +426,7 @@ def snowpark_ml_demo():
 
         _feature_pipeline = feature_engineering(_taxidf)
 
-        _model = train(_feature_pipeline, _snowpark_model_registry)
+        _model = train(_feature_pipeline, _snowpark_model_registry, snowflake_objects)
 
         _pred = predict(_feature_pipeline, _snowpark_model_registry, _model)
         

@@ -27,8 +27,16 @@ from weaviate.util import generate_uuid5
 from astronomer.providers.snowflake.utils.snowpark_helpers import SnowparkTable
 from weaviate_provider.operators.weaviate import WeaviateRestoreOperator
 
-demo_database = 'DEMO'
-demo_schema = 'DEMO'
+# This demo assumes the use of newly created objects in a Snowflake Trial.  
+# If using an existing snowflake account update the following.  If changing 
+# the demo_xcom_stage or demo_xcom_table update the environment variables in 
+# the docker-compose.override.yml file.
+snowflake_objects = {'demo_database': 'DEMO',
+                     'demo_schema': 'DEMO',
+                     'demo_xcom_stage': 'XCOM_STAGE',
+                     'demo_xcom_table': 'XCOM_TABLE',
+                     'demo_snowpark_wh': 'DEMO'
+}
 
 _SNOWFLAKE_CONN_ID = "snowflake_default"
 
@@ -40,7 +48,7 @@ weaviate_class_objects = {'CommentTraining': {'count': 1987}, 'CustomerComment':
 
 default_args={
     "temp_data_output": 'table',
-    "temp_data_schema": demo_schema,
+    "temp_data_schema": snowflake_objects['demo_schema'],
     "temp_data_overwrite": True,
     "temp_data_table_prefix": "XCOM_",
     "snowflake_conn_id": _SNOWFLAKE_CONN_ID,
@@ -65,7 +73,7 @@ def customer_analytics():
     See [README_CA.md](https://github.com/astronomer/airflow-snowparkml-demo/blob/main/README_CA.md) for setup instructions.
     """
     @task.snowpark_python()
-    def create_snowflake_objects(demo_database:str, demo_schema:str, calls_directory_stage:str):
+    def create_snowflake_objects(snowflake_objects:dict, calls_directory_stage:str):
         """
         The Astronomer provider for Snowpark adds a `snowpark_python` task decorator which executes 
         the Snowpark Python code in the decorated callable function. The provider also includes a 
@@ -84,16 +92,25 @@ def customer_analytics():
         running any tasks.
         """
 
-        snowpark_session.sql(f"CREATE DATABASE IF NOT EXISTS {demo_database};").collect()
+        snowpark_session.sql(f"""CREATE DATABASE IF NOT EXISTS \
+                                {snowflake_objects['demo_database']};""").collect()
 
-        snowpark_session.sql(f"CREATE SCHEMA IF NOT EXISTS {demo_database}.{demo_schema};").collect()
+        snowpark_session.sql(f"""CREATE SCHEMA IF NOT EXISTS \
+                                {snowflake_objects['demo_database']}.\
+                                {snowflake_objects['demo_schema']};""").collect()
 
-        snowpark_session.sql(f"""CREATE STAGE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_STAGE 
+        snowpark_session.sql(f"""CREATE STAGE IF NOT EXISTS \
+                                {snowflake_objects['demo_database']}.\
+                                {snowflake_objects['demo_schema']}.\
+                                {snowflake_objects['demo_xcom_stage']} 
                                     DIRECTORY = (ENABLE = TRUE)
                                     ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
                              """).collect()
         
-        snowpark_session.sql(f"""CREATE TABLE IF NOT EXISTS {demo_database}.{demo_schema}.XCOM_TABLE
+        snowpark_session.sql(f"""CREATE TABLE IF NOT EXISTS \
+                             {snowflake_objects['demo_database']}.\
+                            {snowflake_objects['demo_schema']}.\
+                            {snowflake_objects['demo_xcom_table']}
                                     ( 
                                         dag_id varchar NOT NULL, 
                                         task_id varchar NOT NULL, 
@@ -105,7 +122,10 @@ def customer_analytics():
                                  ); 
                               """).collect()
         
-        snowpark_session.sql(f"""CREATE OR REPLACE STAGE {calls_directory_stage} 
+        snowpark_session.sql(f"""CREATE OR REPLACE STAGE \
+                                {snowflake_objects['demo_database']}.\
+                                {snowflake_objects['demo_schema']}.\
+                                {calls_directory_stage} 
                                         DIRECTORY = (ENABLE = TRUE) 
                                         ENCRYPTION = (TYPE = 'SNOWFLAKE_SSE');
                                 """).collect()
@@ -147,7 +167,7 @@ def customer_analytics():
                 f.extractall('/usr/local/airflow/include/weaviate/data/backups')
 
         @task.snowpark_python()
-        def check_model_registry(demo_database:str, demo_schema:str) -> dict:
+        def check_model_registry(snowflake_objects:dict) -> dict:
             """
             Snowpark ML provides a model registry leveraging tables, views and stages to 
             track model state as well as model artefacts. 
@@ -159,12 +179,15 @@ def customer_analytics():
             from snowflake.ml.registry import model_registry
 
             assert model_registry.create_model_registry(session=snowpark_session, 
-                                                        database_name=demo_database, 
-                                                        schema_name=demo_schema)
+                                                        database_name=snowflake_objects['demo_database'], 
+                                                        schema_name=snowflake_objects['demo_schema'])
             
-            return {'database': demo_database, 'schema': demo_schema}
+            snowpark_model_registry = {'database': snowflake_objects['demo_database'], 
+                                    'schema': snowflake_objects['demo_schema']}
+
+            return snowpark_model_registry
         
-        _snowpark_model_registry = check_model_registry(demo_database, demo_schema)
+        _snowpark_model_registry = check_model_registry(snowflake_objects)
         
         _restore_weaviate = WeaviateRestoreOperator(task_id='restore_weaviate',
                                                     backend='filesystem', 
@@ -893,7 +916,7 @@ def customer_analytics():
                                    pred_comment_table=_pred_comment_table)
         
     @task.snowpark_python()
-    def cleanup_temp_tables(demo_database:str, demo_schema:str, **context):
+    def cleanup_temp_tables(snowflake_objects:dict, **context):
         """
         This task will be run as an Airflow 2.7 teardown task.  The task deletes 
         the intermediate, temporary data passed between Snowpark tasks. In production 
@@ -910,8 +933,10 @@ def customer_analytics():
         Here it shows a good use of teardown tasks.
         """
         
-        snowpark_session.database = temp_data_dict['temp_data_db'] or demo_database
-        snowpark_session.schema = temp_data_dict['temp_data_schema'] or demo_schema
+        snowpark_session.database = temp_data_dict['temp_data_db'] \
+                                        or snowflake_objects['demo_database']
+        snowpark_session.schema = temp_data_dict['temp_data_schema'] \
+                                        or snowflake_objects['demo_schema']
 
         if temp_data_dict['temp_data_output'] == 'table':
             xcom_table_string=f"{temp_data_dict['temp_data_table_prefix']}{dag_id}__%__{ts_nodash}__%".upper()
@@ -937,9 +962,9 @@ def customer_analytics():
             xcom_file_list = snowpark_session.sql(f"""REMOVE @{temp_data_dict['temp_data_stage']} 
                                                       PATTERN='{xcom_stage_string}'""").collect()
     
-    _create_snowflake_objects = create_snowflake_objects(demo_database, demo_schema, calls_directory_stage).as_setup() 
+    _create_snowflake_objects = create_snowflake_objects(snowflake_objects, calls_directory_stage).as_setup() 
 
-    with cleanup_temp_tables(demo_database, demo_schema).as_teardown(setups=_create_snowflake_objects):
+    with cleanup_temp_tables(snowflake_objects).as_teardown(setups=_create_snowflake_objects):
         _snowpark_model_registry, _restore_weaviate = enter()
 
         _attribution_touches, _mrr, _customers = structured_data()
