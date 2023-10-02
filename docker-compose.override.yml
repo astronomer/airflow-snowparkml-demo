@@ -1,13 +1,9 @@
 version: '3.1'
 services:
-  # triggerer:
-  #   networks:
-  #   - airflow
-  #   environment:
-  #     AIRFLOW_CONN_WEAVIATE_DEFAULT: '{"conn_type": "weaviate", "host": "http://weaviate:8081", "extra": {"X-OpenAI-Api-Key": "${OPENAI_APIKEY}"}}'
-  scheduler:
+  webserver:
     ports:
     - 8501:8501
+  scheduler:
     networks:
       - airflow
     environment:
@@ -15,32 +11,8 @@ services:
       AIRFLOW__CORE__XCOM_SNOWFLAKE_TABLE: 'DEMO.DEMO.XCOM_TABLE'
       AIRFLOW__CORE__XCOM_SNOWFLAKE_STAGE: 'DEMO.DEMO.XCOM_STAGE'
       AIRFLOW__CORE__XCOM_SNOWFLAKE_CONN_NAME: 'snowflake_default'
-      # AIRFLOW_CONN_SNOWFLAKE_DEFAULT: ${AIRFLOW_CONN_SNOWFLAKE_DEFAULT}
-      # AIRFLOW_CONN_WEAVIATE_DEFAULT: '{"conn_type": "weaviate", "host": "http://weaviate:8081", "extra": {"X-OpenAI-Api-Key": "${OPENAI_APIKEY}"}}'
       AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: airflow\.* astro\.* include\.astro\.*
       AIRFLOW__CORE__TEST_CONNECTION: 'Enabled'
-  streamlit:
-    image: sissyg-streamlit:local
-    build: ./include/streamlit
-    # command:
-    # - python
-    # - -m
-    # - streamlit
-    # - run 
-    # - streamlit_app.py 
-    # - --server.port=8501 
-    # - --server.address=0.0.0.0
-    # environment:
-      # WEAVIATE_ENDPOINT_URL: 'http://weaviate:8081'
-      # OPENAI_APIKEY: ${OPENAI_APIKEY}
-      # SNOWFLAKE_CONN_PARAMS: ${AIRFLOW_CONN_SNOWFLAKE_DEFAULT}
-    # volumes:
-    # - ${PWD}/include/streamlit/snowflake/session:/snowflake/session
-    # - ${PWD}/include/streamlit/src:/app
-    ports:
-    - 8501:8501
-    networks:
-      - airflow
   weaviate:
     image: semitechnologies/weaviate:1.21.1
     command: "--host 0.0.0.0 --port '8081' --scheme http"

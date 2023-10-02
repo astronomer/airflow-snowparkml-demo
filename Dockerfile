@@ -2,8 +2,8 @@
 
 FROM quay.io/astronomer/astro-runtime:9.1.0-python-3.10
 
-COPY /include/astro_provider_snowflake-0.0.0-py3-none-any.whl /tmp
-COPY /include/airflow_provider_weaviate-1.0.0-py3-none-any.whl /tmp
+COPY /include/astro_provider_snowflake-0.0.1-py3-none-any.whl /tmp
+COPY /include/airflow_provider_weaviate-0.0.1-py3-none-any.whl /tmp
 
 PYENV 3.8 snowpark requirements-snowpark.txt
 

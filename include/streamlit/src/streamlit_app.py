@@ -5,6 +5,7 @@ import streamlit as st
 import logging
 import sys
 
+from snowflake.snowpark.context import get_active_session
 from snowflake.snowpark import Session, Window
 from snowflake.snowpark import functions as F
 
@@ -15,71 +16,46 @@ from st_aggrid.shared import GridUpdateMode
 
 st.set_page_config(layout="wide")
 
-
-def get_logger():
-    """
-    Get a logger for local logging.
-    """
-    logger = logging.getLogger("job-tutorial")
-    logger.setLevel(logging.DEBUG)
-    handler = logging.StreamHandler(sys.stdout)
-    handler.setLevel(logging.DEBUG)
-    formatter = logging.Formatter("%(name)s - %(levelname)s - %(message)s")
-    handler.setFormatter(formatter)
-    logger.addHandler(handler)
-    return logger
-
-def get_login_token():
-    """
-    Read the login token supplied automatically by Snowflake. These tokens
-    are short lived and should always be read right before creating any new
-    connection.
-    """
-    with open("/snowflake/session/token", "r") as f:
-        return f.read()
+_SNOWFLAKE_CONN_ID = "snowflake_default"
+_WEAVIATE_CONN_ID = "weaviate_default"
 
 def get_connection_params():
     """
-    Construct Snowflake connection params from environment variables.
-    """
-    if os.path.exists("/snowflake/session/token"):
-        return {
-
-        "account": os.getenv("SNOWFLAKE_ACCOUNT"),
-        "host": os.getenv("SNOWFLAKE_HOST"),
-        "authenticator": "oauth",
-        "token": get_login_token(),
-        # "warehouse": SNOWFLAKE_WAREHOUSE,
-        "database": os.getenv("SNOWFLAKE_DATABASE"),
-        "schema": os.getenv("SNOWFLAKE_SCHEMA")
-        }
-    else:
-        snowflake_conn_params = json.loads(os.environ['SNOWFLAKE_CONN_PARAMS'])
-        return {
-        "account": snowflake_conn_params['extra']['account'],
-        "user": snowflake_conn_params['login'],
-        "password": snowflake_conn_params['password'],
-        "role": snowflake_conn_params['extra'].get('role'),
-        "warehouse": snowflake_conn_params['extra'].get('warehouse'),
-        "database": snowflake_conn_params['extra'].get('database'),
-        "schema": snowflake_conn_params.get('schema'),
-        "region": snowflake_conn_params.get('region')
-}
-
-# logger = get_logger()
-# logger.info()
+    # Construct Snowflake connection params from environment variables.
+    # """
+    
+    snowflake_conn_id = 'AIRFLOW_CONN_'+_SNOWFLAKE_CONN_ID.upper()
+    weaviate_conn_id = 'AIRFLOW_CONN_'+_WEAVIATE_CONN_ID.upper()
+    snowflake_conn_params = json.loads(os.environ[snowflake_conn_id])
+    weaviate_conn_params = json.loads(os.environ[weaviate_conn_id])
+    return {"snowflake": {"account": snowflake_conn_params['extra']['account'],
+                          "user": snowflake_conn_params['login'],
+                          "password": snowflake_conn_params['password'],
+                          "role": snowflake_conn_params['extra'].get('role'),
+                          "warehouse": snowflake_conn_params['extra'].get('warehouse'),
+                          "database": snowflake_conn_params['extra'].get('database'),
+                          "schema": snowflake_conn_params.get('schema'),
+                          "region": snowflake_conn_params.get('region')
+                          },
+            "weaviate" : {"host": weaviate_conn_params['host'],
+                          "openai_key": weaviate_conn_params['extra']['X-OpenAI-Api-Key']}
+    }
 
 if "snowpark_session" not in st.session_state:
-  snowpark_session = Session.builder.configs(get_connection_params()).create()
-  st.session_state['snowpark_session'] = snowpark_session
+    try:
+        snowpark_session = get_active_session()
+    except:
+        snowpark_session = Session.builder.configs(get_connection_params()['snowflake']).create()
+    
+    st.session_state['snowpark_session'] = snowpark_session
 else:
   snowpark_session = st.session_state['snowpark_session']
 
 if "weaviate_client" not in st.session_state:
     weaviate_client = weaviate.Client(
-            url = os.environ['WEAVIATE_ENDPOINT_URL'].replace("\'",""), 
+            url = get_connection_params()['weaviate']['host'], 
                 additional_headers = {
-                    "X-OpenAI-Api-Key": os.environ['OPENAI_APIKEY']
+                    "X-OpenAI-Api-Key": get_connection_params()['weaviate']['openai_key']
                 }
             )
     st.session_state['weaviate_client'] = weaviate_client

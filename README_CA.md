@@ -1,6 +1,10 @@
+<img style="display: block; float: right; max-width: 80%; height: auto; margin: auto; float: none!important;" src="images/dag.png">
+
+This demonstration shows how to build a customer analytics dashboard.  Sissy-G Toys is a fictitious online retailer for toys and games.  The GroundTruth customer analytics application provides marketing, sales and product managers with a one-stop-shop for analytics.  The application uses machine learning models for audio transcription, natural language embeddings and sentiment analysis on structured, semi-structured and unstructured data. 
+
 [Snowpark ML](https://docs.snowflake.com/en/developer-guide/snowpark-ml/index) (in public preview) is a python framework for Machine Learning workloads with [Snowpark](https://docs.snowflake.com/en/developer-guide/snowpark/python/index.html).  Currently Snowpark ML provides a model registry (storing ML tracking data and models in Snowflake tables and stages), feature engineering primitives similar to scikit-learn (ie. LabelEncoder, OneHotEncoder, etc.) and support for training and deploying [certain model types](https://docs.snowflake.com/en/developer-guide/snowpark-ml/snowpark-ml-modeling#snowpark-ml-modeling-classes) as well as deployments as user-defined functions (UDFs).
 
-This guide demonstrates how to use Apache Airflow to orchestrate a machine learning pipeline leveraging Snowpark ML for feature engineering and model tracking. While Snowpark ML has its own support for models similar to scikit-learn this code demonstrates a "bring-your-own" model approach showing the use of open-source scikit-learn along with Snowpark ML model registry and model serving in an Airflow task rather than Snowpark UDF.
+This guide demonstrates how to use Apache Airflow to orchestrate a machine learning pipeline leveraging the Snowpark provider and Snowpark ML for feature engineering and model tracking. While Snowpark ML has its own support for models similar to scikit-learn this code demonstrates a "bring-your-own" model approach showing the use of open-source scikit-learn along with Snowpark ML model registry and model serving in an Airflow task rather than Snowpark user-defined function (UDF).  
 
 This demo also shows the use of the Snowflake XCOM backend which supports security and governance by serializing all task in/output to Snowflake tables and stages while storing in the Airflow XCOM table a URI pointer to the data.
 
@@ -75,8 +79,24 @@ astro dev run dags trigger customer_analytics
 Follow the status of the DAG run in the [Airflow UI](http://localhost:8080/dags/customer_analytics/grid) (username: `admin`, password: `admin`)
 
 
-8. After the DAG completes open the [streamlit application](http://localhost:8501)
+8. After the DAG completes look at the customer analytics dashboard in Streamlit.   
+Streamlit has been installed alongside the Airflow UI in the webserver container. 
+
+Connect to the webserver container with the Astro CLI
+```bash
+astro dev bash -w
+``` 
+
+Start Streamlit
+```bash
+cd include/streamlit/src
+python -m streamlit run ./streamlit_app.py
+```
+
+Open the [streamlit application](http://localhost:8501) in a browser.
 
 Other service UIs are available at the the following:
 - Airflow: [http://localhost:8080](http://localhost:8080) Username:Password is admin:admin
 - Weaviate: [https://console.weaviate.io/](https://link.weaviate.io/3UD9H8z) Enter localhost:8081 in the "Self-hosted Weaviate" field.
+
+See `README.md` for an example of using Snowpark ML libraries for training in a UDF.  

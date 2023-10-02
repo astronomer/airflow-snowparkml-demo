@@ -71,7 +71,7 @@ def customer_analytics():
         the Snowpark Python code in the decorated callable function. The provider also includes a 
         traditional operator `SnowparkPythonOperator` though this demo only shows the taskflow API.
 
-        The decorartor (and operator) automatically instantiates a `snowpark_session`.  Snowflake 
+        The decorator (and operator) automatically instantiates a `snowpark_session`.  Snowflake 
         credentials are automatically and securely passed using the Airflow Connections so users do 
         not need to pass Snowflake credentials as function arguments.  For this demo the 
         `snowflake_conn_id` parameter is defined in the `default_args` above.
@@ -250,7 +250,7 @@ def customer_analytics():
                 and `temp_data_table_prefix`.  For this demo these parameters are set as `default_args` at the 
                 top of this file.  Alternatively, these can be set for each task or overriden per-task.
 
-                The Snowpark `Functions` and `Types have been automatically imported as `F` and 
+                The Snowpark `Functions` and `Types` have been automatically imported as `F` and 
                 `T` respectively.
                 """
                 
@@ -533,7 +533,7 @@ def customer_analytics():
                 task pulls the data from Snowflake tables and passes it to the import task as 
                 a pandas dataframe.
 
-                Normally Airflows cross-communication (XCOM) system is not designed for passing 
+                Normally Airflow's cross-communication (XCOM) system is not designed for passing 
                 large or complex (ie. non-json-serializable) data between tasks as it relies on 
                 storing data in a database (usually postgres or mysql). Airflow 2.5+ has added 
                 support for [passing pandas dataframe](https://github.com/apache/airflow/pull/30390). 
@@ -546,7 +546,7 @@ def customer_analytics():
                 For these reasons the Astronomer provider for Snowpark includes a [custom XCOM 
                 backend](https://docs.astronomer.io/learn/xcom-backend-tutorial) which saves 
                 XCOM data passed between tasks in either Snowflake tables or stages. 
-                small, JSON-serializable data is stored in a single table and large or 
+                Small, JSON-serializable data is stored in a single table and large or 
                 non-serializable data is stored in a stage.  This allows passing arbitrarily 
                 large or complex data between tasks and ensures that all data, including 
                 intermediate datasets, stay inside the secure, goverened boundary of Snowflake.
@@ -963,37 +963,3 @@ def test():
     from snowflake.snowpark import functions as F, types as T
     conn_params = SnowflakeHook('snowflake_default')._get_conn_params()
     snowpark_session = SnowparkSession.builder.configs(conn_params).create()
-    from weaviate_provider.hooks.weaviate import WeaviateHook
-    weaviate_client = WeaviateHook('weaviate_default').get_conn()
-
-    for class_object in weaviate_class_objects.keys():
-        expected_count = weaviate_class_objects[class_object]['count']
-        expected_count
-        response = weaviate_client.query.aggregate(class_name=class_object).with_meta_count().do()
-        count = response["data"]["Aggregate"][class_object][0]["meta"]["count"]
-        count
-
-    pd.DataFrame(weaviate_client.data_object.get(with_vector=True, class_name='CommentTraining')['objects']).columns
-
-    path = "@DEMO.DEMO.XCOM_STAGE/customer_analytics/unstructured_data.generate_embeddings.get_training_pandas/manual__2023-09-10T15:57:47.206033+00:00/0/return_value.parquet"
-    path = "@DEMO.DEMO.XCOM_STAGE/customer_analytics/unstructured_data.generate_embeddings.get_comment_pandas/manual__2023-09-10T15:57:47.206033+00:00/0/return_value.parquet"
-    snowpark_session.file.get(path, 'include/')
-    df=pd.read_parquet('include/return_value.parquet')
-
-    df.rename({'CUSTOMER_ID': 'cUSTOMER_ID', 'REVIEW_TEXT': 'rEVIEW_TEXT', 'DATE': 'dATE'}, axis=1, inplace=True)
-    df['cUSTOMER_ID'] = df['cUSTOMER_ID'].apply(str)
-    df['dATE'] = pd.to_datetime(df['dATE']).dt.strftime("%Y-%m-%dT%H:%M:%S-00:00")
-    df = df.replace(r'^\s*$', np.nan, regex=True).dropna()
-    df['rEVIEW_TEXT'] = df['rEVIEW_TEXT'].apply(lambda x: x.replace("\n",""))
-
-    generate_uuid5({'cUSTOMER_ID': df.iloc[0][0], 'rEVIEW_TEXT': df.iloc[0][0], 'dATE': df.iloc[0][1]}, 'CommentTraining')
-
-    generate_uuid5(df.iloc[0].to_dict(), 'CommentTraining')
-    df.iloc[0]
-    df.apply(lambda x: generate_uuid5(x.to_dict(), 'CommentTraining'), axis=1).iloc[0]
-
-    df = df[['cUSTOMER_ID', 'rEVIEW_TEXT', 'dATE']]
-    generate_uuid5(df.iloc[0].to_dict(), 'CommentTraining')
-
-    weaviate_client.query.get("JeopardyQuestion").with_additional("vector").with_limit(1).do()
-    
