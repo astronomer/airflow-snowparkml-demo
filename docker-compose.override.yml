@@ -14,7 +14,7 @@ services:
       AIRFLOW__CORE__ALLOWED_DESERIALIZATION_CLASSES: airflow\.* astro\.* include\.astro\.*
       AIRFLOW__CORE__TEST_CONNECTION: 'Enabled'
   weaviate:
-    image: semitechnologies/weaviate:1.21.1
+    image: cr.weaviate.io/semitechnologies/weaviate:1.21.1
     command: "--host 0.0.0.0 --port '8081' --scheme http"
     ports:
     - 8081:8081
